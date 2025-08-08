@@ -15,6 +15,7 @@ dependencies = [
   "polars>=0.20",
   "mnemonic>=0.20",
   "natsort>=8.0",
+  "click>=8.1",
 ]
 classifiers = [
   "Programming Language :: Python",
@@ -22,6 +23,9 @@ classifiers = [
   "Operating System :: MacOS",
   "Operating System :: POSIX :: Linux",
 ]
+
+[project.scripts]
+clonify = "clonify.cli:main"
 
 [project.optional-dependencies]
 dev = ["maturin>=1.5,<2.0", "pytest>=7.0", "polars>=0.20", "numpy>=1.23", "mnemonic>=0.20", "natsort>=8.0"]
