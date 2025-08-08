@@ -18,6 +18,18 @@ except Exception as e:  # pragma: no cover
 
 
 def _split_mutations(mut: str, delimiter: str) -> List[str]:
+    """Split a mutation string into a list of mutation codes.
+
+    Empty strings and ``None`` yield an empty list.
+
+    Args:
+        mut (str): Raw mutation string (e.g., "A23C|C45T"). May be empty or
+            ``None``.
+        delimiter (str): Delimiter separating mutations.
+
+    Returns:
+        List[str]: Non-empty mutation codes in their original order.
+    """
     if mut is None or mut == "":
         return []
     return [m for m in mut.split(delimiter) if m]
@@ -31,6 +43,35 @@ def _compute_likely_allelic_variants(
     min_seqs_for_allelic_variants: int,
     verbose: bool,
 ) -> Dict[str, List[str]]:
+    """Identify mutations that are likely germline allelic variants per V gene.
+
+    For each unique V gene in ``df``, the function counts how frequently each
+    mutation occurs across sequences assigned to that V gene. Mutations observed
+    in at least ``allelic_variant_threshold * num_sequences_for_v`` sequences are
+    flagged as likely allelic variants. If ``verbose`` is ``True``, progress and
+    summaries are printed.
+
+    Args:
+        df (polars.DataFrame): DataFrame with at least ``vgene_key`` and
+            ``mutations_key``; per-row mutations must be lists of strings.
+        vgene_key (str): Column name with V gene identifiers.
+        mutations_key (str): Column name with lists of mutation strings per
+            sequence.
+        allelic_variant_threshold (float): Fraction threshold; for example,
+            ``0.35`` means a mutation must appear in at least 35% of sequences
+            for that V gene.
+        min_seqs_for_allelic_variants (int): Minimum sequences required for a V
+            gene before allelic variants are computed. V genes with fewer
+            sequences yield an empty list.
+        verbose (bool): Whether to print progress and per-V gene summaries.
+
+    Returns:
+        Dict[str, List[str]]: Mapping from V gene to mutation strings that are
+        likely allelic variants for that gene.
+
+    Raises:
+        KeyError: If ``vgene_key`` or ``mutations_key`` are missing from ``df``.
+    """
     unique_vgenes = df[vgene_key].unique().to_list()
     likely: Dict[str, List[str]] = {}
     if verbose:
@@ -63,6 +104,42 @@ def _encode_group_inputs(
 ) -> Tuple[
     List[str], List[int], List[int], List[int], List[int], List[Tuple[int, List[int]]]
 ]:
+    """Encode grouped inputs into integer IDs and ragged arrays for the native backend.
+
+    Transforms a group of sequences into the compact, integer-encoded
+    representation expected by the native clustering implementation. Specifically:
+
+    - Maps V and J gene strings to integer IDs.
+    - Flattens per-sequence mutation lists into a single vector with a companion
+      ``offsets`` array that delimits original sequence boundaries.
+    - Converts likely allelic variants per V gene into integer mutation IDs.
+
+    Args:
+        group_df (polars.DataFrame): Group of sequences from the full input
+            table.
+        id_key (str): Column containing unique sequence identifiers.
+        vgene_key (str): Column containing V gene identifiers.
+        jgene_key (str): Column containing J gene identifiers.
+        cdr3_key (str): Column containing CDR3 amino-acid sequences.
+        mut_lists_key (str): Column containing lists of mutation strings per
+            sequence (already split).
+        likely_allelic (Dict[str, List[str]]): Mapping of V gene to mutation
+            strings treated as likely allelic variants (i.e., down-weighted or
+            ignored by the native algorithm).
+
+    Returns:
+        Tuple[List[str], List[int], List[int], List[int], List[int], List[Tuple[int, List[int]]]]:
+            - cdr3_list: CDR3 sequences for each row, in order.
+            - v_ids: Integer V gene IDs parallel to ``cdr3_list``.
+            - j_ids: Integer J gene IDs parallel to ``cdr3_list``.
+            - mut_ids_flat: Flattened mutation IDs across all rows.
+            - mut_offsets: Offsets delimiting sequences within ``mut_ids_flat``;
+              the mutations for row ``i`` are in ``[mut_offsets[i], mut_offsets[i+1])``.
+            - v_allelic: For each unique V gene ID, a pair ``(v_id, allelic_mutation_ids)``.
+
+    Raises:
+        KeyError: If required columns are missing from ``group_df``.
+    """
     v_values = group_df[vgene_key].to_list()
     j_values = group_df[jgene_key].to_list()
     v_map: Dict[str, int] = {}
@@ -104,6 +181,22 @@ def _encode_group_inputs(
 def _assign_cluster_names(
     labels: List[int], ids: List[str], mnemonic_names: bool
 ) -> Dict[str, str]:
+    """Create human-friendly or random cluster names for label groups.
+
+    Given a cluster label for each sequence ``id``, assigns a stable, per-cluster
+    name and returns the mapping from sequence ID to cluster name. When
+    ``mnemonic_names`` is ``True``, names are generated using mnemonic English
+    word lists; otherwise, names are random alphanumeric strings.
+
+    Args:
+        labels (List[int]): Cluster labels, one per sequence (parallel to ``ids``).
+        ids (List[str]): Sequence identifiers aligned with ``labels``.
+        mnemonic_names (bool): If ``True``, generate mnemonic names; otherwise,
+            generate random 16-character alphanumeric names.
+
+    Returns:
+        Dict[str, str]: Mapping from sequence ID to assigned cluster name.
+    """
     mnemo = Mnemonic("english")
     assign: Dict[str, str] = {}
     cluster_ids = sorted(set(labels))
@@ -143,6 +236,70 @@ def clonify(
     n_threads: Optional[int] = None,
     verbose: bool = True,
 ) -> Tuple[Dict[str, str], pl.DataFrame]:
+    """Cluster sequences into clonal lineages and return assignments plus an annotated table.
+
+    Clusters immunoglobulin sequences using a native high-performance (Rust)
+    backend. The input table is optionally grouped (e.g., by V/J gene and
+    inferred light-chain V/J) before clustering. For each group, sequences are
+    encoded and passed to an average-linkage routine.
+
+    If ``ignore_likely_allelic_variants`` is ``True``, mutations that appear at
+    high frequency for a given V gene are identified and treated as likely
+    germline allelic variants (i.e., down-weighted or ignored during clustering).
+
+    The output mapping assigns each sequence ID to a lineage name. The returned
+    DataFrame contains all input columns plus two additional columns:
+
+    - ``lineage``: Assigned lineage name for each sequence.
+    - ``lineage_size``: Total number of sequences in that lineage.
+
+    Args:
+        df (polars.DataFrame): Input with at least ``id_key``, ``vgene_key``,
+            ``jgene_key``, ``cdr3_key``, and ``mutations_key``. If a ``"locus"``
+            column is present, only rows with ``"IGH"`` are clustered.
+        distance_cutoff (float): Maximum clustering distance threshold. Lower
+            values yield tighter clusters.
+        shared_mutation_bonus (float): Bonus applied when two sequences share a
+            mutation.
+        length_penalty_multiplier (float | int): Multiplier controlling the
+            penalty for CDR3 length differences.
+        group_by_v (bool): Whether to group by V gene before clustering.
+        group_by_j (bool): Whether to group by J gene before clustering.
+        group_by_light_chain_vj (bool): Additionally group by
+            ``f"{vgene_key}:1"`` and ``f"{jgene_key}:1"`` if present (commonly
+            used for light-chain V/J annotations).
+        id_key (str): Column containing unique sequence identifiers.
+        vgene_key (str): Column containing V gene identifiers.
+        jgene_key (str): Column containing J gene identifiers.
+        cdr3_key (str): Column containing CDR3 amino-acid sequences.
+        mutations_key (str): Column containing raw mutation strings per
+            sequence.
+        mutation_delimiter (str): Delimiter used to split ``mutations_key`` into
+            individual mutation codes.
+        ignore_likely_allelic_variants (bool): If ``True``, detect high-frequency
+            mutations per V gene and treat them as likely allelic variants during
+            clustering.
+        allelic_variant_threshold (float): Fraction of sequences per V gene
+            required for a mutation to be considered a likely allelic variant.
+        min_seqs_for_allelic_variants (int): Minimum sequences per V gene before
+            allelic variants are computed.
+        mnemonic_names (bool): If ``True``, use mnemonic word lists for
+            human-readable lineage names; otherwise, generate random
+            alphanumeric names.
+        n_threads (Optional[int]): Number of threads for the native backend.
+            ``None`` lets the backend choose a default.
+        verbose (bool): Whether to print progress and grouping information.
+
+    Returns:
+        Tuple[Dict[str, str], polars.DataFrame]:
+            - assignments: Maps each sequence ID (``id_key``) to its lineage name.
+            - df_out: The input DataFrame with ``lineage`` and ``lineage_size``
+              columns added.
+
+    Raises:
+        ValueError: If ``mutations_key`` is missing from ``df``.
+        KeyError: If any other required columns are missing when accessed.
+    """
     if mutations_key not in df.columns:
         raise ValueError(f"Missing column: {mutations_key}")
     mut_lists = [
