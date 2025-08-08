@@ -9,6 +9,7 @@ struct Params {
     length_penalty_multiplier: f64,
     v_penalty: f64,
     j_penalty: f64,
+    distance_cutoff: f64,
 }
 
 #[inline]
@@ -66,6 +67,9 @@ struct NativeInputs {
     mut_ids: Vec<i32>,
     mut_offsets: Vec<usize>,
     v_allelic: AHashMap<i32, Vec<i32>>,
+    // Precomputed per-sequence filtered mutation ids (allelic-masked)
+    filtered_mut_ids: Vec<i32>,
+    filtered_mut_offsets: Vec<usize>,
 }
 
 #[pymethods]
@@ -97,7 +101,53 @@ impl NativeInputs {
             v.dedup();
             map.insert(k, v);
         }
-        Ok(NativeInputs { n, cdr3: cdr3_bytes, v_ids, j_ids, mut_ids, mut_offsets, v_allelic: map })
+
+        // Precompute filtered mutation ids per sequence by removing likely allelic variants
+        let mut filtered_mut_ids: Vec<i32> = Vec::with_capacity(mut_ids.len());
+        let mut filtered_mut_offsets: Vec<usize> = Vec::with_capacity(n + 1);
+        filtered_mut_offsets.push(0);
+        for i in 0..n {
+            let a0 = mut_offsets[i];
+            let a1 = mut_offsets[i + 1];
+            let seq_mut = &mut_ids[a0..a1];
+            // Allelic list for this sequence's V id
+            let allelic = map.get(&v_ids[i]).map(|v| v.as_slice()).unwrap_or(&[]);
+            // Merge-like filter: both seq_mut and allelic are sorted
+            let mut p = 0usize;
+            let mut q = 0usize;
+            while p < seq_mut.len() {
+                if q >= allelic.len() {
+                    // push all remaining
+                    filtered_mut_ids.extend_from_slice(&seq_mut[p..]);
+                    break;
+                }
+                let mv = seq_mut[p];
+                let av = allelic[q];
+                if mv < av {
+                    filtered_mut_ids.push(mv);
+                    p += 1;
+                } else if mv > av {
+                    q += 1;
+                } else {
+                    // equal → skip allelic mutation
+                    p += 1;
+                    q += 1;
+                }
+            }
+            filtered_mut_offsets.push(filtered_mut_ids.len());
+        }
+
+        Ok(NativeInputs {
+            n,
+            cdr3: cdr3_bytes,
+            v_ids,
+            j_ids,
+            mut_ids,
+            mut_offsets,
+            v_allelic: map,
+            filtered_mut_ids,
+            filtered_mut_offsets,
+        })
     }
 }
 
@@ -118,41 +168,37 @@ fn pair_distance(
 
     let length_penalty = (len1 as isize - len2 as isize).abs() as f64 * params.length_penalty_multiplier;
     let min_len = len1.min(len2) as f64;
+
+    // Early cutoff: if length penalty alone exceeds cutoff window, no need to compute LD/mutations
+    if params.distance_cutoff > 0.0 && length_penalty >= min_len * params.distance_cutoff {
+        // Ensure we do not spuriously merge at exactly the cutoff
+        return params.distance_cutoff + f64::EPSILON;
+    }
+
     let dist = if len1 == len2 { hamming(s1, s2) } else { levenshtein(s1, s2) } as f64;
 
-    let a0 = inp.mut_offsets[i];
-    let a1 = inp.mut_offsets[i + 1];
-    let b0 = inp.mut_offsets[j];
-    let b1 = inp.mut_offsets[j + 1];
-    let mut_a = &inp.mut_ids[a0..a1];
-    let mut_b = &inp.mut_ids[b0..b1];
-    let empty: Vec<i32> = Vec::new();
-    let allelic_a = inp.v_allelic.get(&inp.v_ids[i]).unwrap_or(&empty);
-    let allelic_b = inp.v_allelic.get(&inp.v_ids[j]).unwrap_or(&empty);
-    let filtered_a: Vec<i32> = mut_a.iter().copied().filter(|x| allelic_a.binary_search(x).is_err()).collect();
-    let filtered_b: Vec<i32> = mut_b.iter().copied().filter(|x| allelic_b.binary_search(x).is_err()).collect();
-    let shared = intersection_count(&filtered_a, &filtered_b) as f64;
+    // Use precomputed filtered mutation lists
+    let a0 = inp.filtered_mut_offsets[i];
+    let a1 = inp.filtered_mut_offsets[i + 1];
+    let b0 = inp.filtered_mut_offsets[j];
+    let b1 = inp.filtered_mut_offsets[j + 1];
+    let mut_a = &inp.filtered_mut_ids[a0..a1];
+    let mut_b = &inp.filtered_mut_ids[b0..b1];
+    let shared = intersection_count(mut_a, mut_b) as f64;
     let mutation_bonus = shared * params.shared_mutation_bonus;
 
     let score = germline_penalty + ((dist + length_penalty - mutation_bonus) / min_len);
     if score < 0.001 { 0.001 } else { score }
 }
 
-#[pyfunction]
-fn average_linkage_cutoff(
+fn average_linkage_cutoff_fallback(
     inp: &NativeInputs,
-    shared_mutation_bonus: f64,
-    length_penalty_multiplier: f64,
-    v_penalty: f64,
-    j_penalty: f64,
+    params: &Params,
     distance_cutoff: f64,
-    n_threads: Option<usize>,
-) -> PyResult<Vec<i32>> {
-    if let Some(t) = n_threads { rayon::ThreadPoolBuilder::new().num_threads(t).build_global().ok(); }
-    let params = Params { shared_mutation_bonus, length_penalty_multiplier, v_penalty, j_penalty };
+) -> Vec<i32> {
     let n = inp.n;
-    if n == 0 { return Ok(vec![]); }
-    if n == 1 { return Ok(vec![0]); }
+    if n == 0 { return vec![]; }
+    if n == 1 { return vec![0]; }
 
     let mut active: Vec<bool> = vec![true; n];
     let mut labels: Vec<i32> = (0..n as i32).collect();
@@ -169,7 +215,7 @@ fn average_linkage_cutoff(
                 let m2 = &members[j];
                 let total = (m1.len() * m2.len()) as f64;
                 let sum: f64 = m1.par_iter().map(|&ii| {
-                    m2.iter().map(|&jj| pair_distance(inp, ii, jj, &params)).sum::<f64>()
+                    m2.iter().map(|&jj| pair_distance(inp, ii, jj, params)).sum::<f64>()
                 }).sum();
                 let d = sum / total;
                 if d <= distance_cutoff {
@@ -203,6 +249,41 @@ fn average_linkage_cutoff(
         let entry = map.entry(*l).or_insert_with(|| { let v = next; next += 1; v });
         *l = *entry;
     }
+    labels
+}
+
+#[cfg(feature = "nn_chain")]
+fn average_linkage_cutoff_impl(
+    inp: &NativeInputs,
+    params: &Params,
+    distance_cutoff: f64,
+) -> Vec<i32> {
+    // Placeholder: will be replaced by NN-chain implementation; use fallback for now
+    average_linkage_cutoff_fallback(inp, params, distance_cutoff)
+}
+
+#[cfg(not(feature = "nn_chain"))]
+fn average_linkage_cutoff_impl(
+    inp: &NativeInputs,
+    params: &Params,
+    distance_cutoff: f64,
+) -> Vec<i32> {
+    average_linkage_cutoff_fallback(inp, params, distance_cutoff)
+}
+
+#[pyfunction]
+fn average_linkage_cutoff(
+    inp: &NativeInputs,
+    shared_mutation_bonus: f64,
+    length_penalty_multiplier: f64,
+    v_penalty: f64,
+    j_penalty: f64,
+    distance_cutoff: f64,
+    n_threads: Option<usize>,
+) -> PyResult<Vec<i32>> {
+    if let Some(t) = n_threads { rayon::ThreadPoolBuilder::new().num_threads(t).build_global().ok(); }
+    let params = Params { shared_mutation_bonus, length_penalty_multiplier, v_penalty, j_penalty, distance_cutoff };
+    let labels = average_linkage_cutoff_impl(inp, &params, distance_cutoff);
     Ok(labels)
 }
 

@@ -91,17 +91,41 @@ def _write_dataframe(_: pl.DataFrame, __: str) -> None:
 @click.option(
     "--id-key",
     type=str,
-    default="sequence_id",
+    default=None,
     help="Column name for unique sequence IDs.",
 )
-@click.option("--vgene-key", type=str, default="v_gene", help="Column name for V gene.")
-@click.option("--jgene-key", type=str, default="j_gene", help="Column name for J gene.")
-@click.option("--cdr3-key", type=str, default="cdr3", help="Column name for CDR3.")
+@click.option(
+    "--vgene-key", type=str, default=None, help="Column name for V gene (heavy)."
+)
+@click.option(
+    "--jgene-key", type=str, default=None, help="Column name for J gene (heavy)."
+)
+@click.option(
+    "--cdr3-key", type=str, default=None, help="Column name for CDR3 (heavy)."
+)
 @click.option(
     "--mutations-key",
     type=str,
-    default="v_mutations",
+    default=None,
     help="Column name for V-region mutations (delimited string).",
+)
+@click.option(
+    "--locus-key",
+    type=str,
+    default=None,
+    help="Optional column name for locus; if set or inferred, rows will be filtered to IGH for allelic scan.",
+)
+@click.option(
+    "--light-vgene-key",
+    type=str,
+    default=None,
+    help="Optional column name for light chain V gene (e.g., 'v_gene:1').",
+)
+@click.option(
+    "--light-jgene-key",
+    type=str,
+    default=None,
+    help="Optional column name for light chain J gene (e.g., 'j_gene:1').",
 )
 @click.option(
     "--mutation-delimiter",
@@ -171,7 +195,10 @@ def cli(
     vgene_key: str,
     jgene_key: str,
     cdr3_key: str,
-    mutations_key: str,
+    mutations_key: Optional[str],
+    locus_key: Optional[str],
+    light_vgene_key: Optional[str],
+    light_jgene_key: Optional[str],
     mutation_delimiter: str,
     ignore_likely_allelic_variants: bool,
     allelic_variant_threshold: float,
@@ -206,6 +233,9 @@ def cli(
             jgene_key=jgene_key,
             cdr3_key=cdr3_key,
             mutations_key=mutations_key,
+            locus_key=locus_key,
+            light_vgene_key=light_vgene_key,
+            light_jgene_key=light_jgene_key,
             mutation_delimiter=mutation_delimiter,
             ignore_likely_allelic_variants=ignore_likely_allelic_variants,
             allelic_variant_threshold=allelic_variant_threshold,

@@ -175,11 +175,14 @@ def clonify_native(
     group_by_v: bool = True,
     group_by_j: bool = True,
     group_by_light_chain_vj: bool = True,
-    id_key: str = "sequence_id",
-    vgene_key: str = "v_gene",
-    jgene_key: str = "j_gene",
-    cdr3_key: str = "cdr3",
-    mutations_key: str = "v_mutations",
+    id_key: Optional[str] = None,
+    vgene_key: Optional[str] = None,
+    jgene_key: Optional[str] = None,
+    cdr3_key: Optional[str] = None,
+    mutations_key: Optional[str] = None,
+    locus_key: Optional[str] = None,
+    light_vgene_key: Optional[str] = None,
+    light_jgene_key: Optional[str] = None,
     mutation_delimiter: str = "|",
     ignore_likely_allelic_variants: bool = False,
     allelic_variant_threshold: float = 0.35,
@@ -189,25 +192,46 @@ def clonify_native(
     n_threads: Optional[int] = None,
     verbose: bool = True,
 ) -> Tuple[Dict[str, str], pl.DataFrame]:
-    if mutations_key not in df.columns:
-        raise ValueError(f"Missing column: {mutations_key}")
+    # Resolve dynamic defaults for keys based on schema
+    def _choose(candidates: List[str]) -> Optional[str]:
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
+    resolved_id_key = (
+        id_key or _choose(["sequence_id:0", "sequence_id"]) or "sequence_id"
+    )
+    resolved_v_key = vgene_key or _choose(["v_gene:0", "v_gene"]) or "v_gene"
+    resolved_j_key = jgene_key or _choose(["j_gene:0", "j_gene"]) or "j_gene"
+    resolved_cdr3_key = cdr3_key or _choose(["cdr3:0", "cdr3"]) or "cdr3"
+    resolved_mut_key = (
+        mutations_key or _choose(["v_mutations:0", "v_mutations"]) or "v_mutations"
+    )
+    resolved_locus_key = locus_key or _choose(["locus:0", "locus"])  # may be None
+    resolved_lc_v_key = light_vgene_key or _choose(["v_gene:1"])  # may be None
+    resolved_lc_j_key = light_jgene_key or _choose(["j_gene:1"])  # may be None
+
+    # Validate required columns exist
+    if resolved_mut_key not in df.columns:
+        raise ValueError(f"Missing column: {resolved_mut_key}")
     mut_lists = [
-        _split_mutations(m, mutation_delimiter) for m in df[mutations_key].to_list()
+        _split_mutations(m, mutation_delimiter) for m in df[resolved_mut_key].to_list()
     ]
     df = df.with_columns(pl.Series(name="__mut_list__", values=mut_lists))
 
-    if "locus" in df.columns:
-        filtered_df = df.filter(pl.col("locus") == "IGH")
+    if resolved_locus_key is not None:
+        filtered_df = df.filter(pl.col(resolved_locus_key) == "IGH")
     else:
         filtered_df = df
 
     if ignore_likely_allelic_variants:
         likely_allelic = _compute_likely_allelic_variants(
-            filtered_df.select([vgene_key, "__mut_list__"]).rename(
-                {"__mut_list__": mutations_key}
+            filtered_df.select([resolved_v_key, "__mut_list__"]).rename(
+                {"__mut_list__": resolved_mut_key}
             ),
-            vgene_key,
-            mutations_key,
+            resolved_v_key,
+            resolved_mut_key,
             allelic_variant_threshold,
             min_seqs_for_allelic_variants,
             verbose,
@@ -217,18 +241,24 @@ def clonify_native(
 
     group_keys: List[str] = []
     if group_by_v:
-        group_keys.append(vgene_key)
+        group_keys.append(resolved_v_key)
     if group_by_j:
-        group_keys.append(jgene_key)
-    if group_by_light_chain_vj and any(c.endswith(":1") for c in df.columns):
-        group_keys.extend([f"{vgene_key}:1", f"{jgene_key}:1"])
+        group_keys.append(resolved_j_key)
+    if (
+        group_by_light_chain_vj
+        and resolved_lc_v_key is not None
+        and resolved_lc_j_key is not None
+        and resolved_lc_v_key in df.columns
+        and resolved_lc_j_key in df.columns
+    ):
+        group_keys.extend([resolved_lc_v_key, resolved_lc_j_key])
 
     if verbose and group_keys:
         pretty = [
             "V gene"
-            if k == vgene_key
+            if k == resolved_v_key
             else "J gene"
-            if k == jgene_key
+            if k == resolved_j_key
             else "Light chain V/J genes"
             for k in group_keys
         ]
@@ -243,7 +273,7 @@ def clonify_native(
     assign_total: Dict[str, str] = {}
     out_rows: List[Tuple[str, str]] = []
     for group_df in groups:
-        ids: List[str] = group_df[id_key].to_list()
+        ids: List[str] = group_df[resolved_id_key].to_list()
         if len(ids) == 1:
             name = generate_cluster_name(
                 ids, mnemonic_names=mnemonic_names, seed=name_seed
@@ -255,10 +285,10 @@ def clonify_native(
         cdr3_list, v_ids, j_ids, mut_ids_flat, mut_offsets, v_allelic = (
             _encode_group_inputs(
                 group_df,
-                id_key,
-                vgene_key,
-                jgene_key,
-                cdr3_key,
+                resolved_id_key,
+                resolved_v_key,
+                resolved_j_key,
+                resolved_cdr3_key,
                 "__mut_list__",
                 likely_allelic,
             )
@@ -290,7 +320,7 @@ def clonify_native(
         out_rows.extend((sid, assign[sid]) for sid in ids)
 
     lineage_size = Counter(name for _, name in out_rows)
-    lineage_col = [assign_total[df[id_key][i]] for i in range(df.shape[0])]
+    lineage_col = [assign_total[df[resolved_id_key][i]] for i in range(df.shape[0])]
     size_col = [lineage_size[lineage_col[i]] for i in range(df.shape[0])]
     df_out = df.with_columns(
         pl.Series(name="lineage", values=lineage_col),
@@ -316,11 +346,14 @@ def clonify(
     group_by_v: bool = True,
     group_by_j: bool = True,
     group_by_light_chain_vj: bool = True,
-    id_key: str = "sequence_id",
-    vgene_key: str = "v_gene",
-    jgene_key: str = "j_gene",
-    cdr3_key: str = "cdr3",
-    mutations_key: str = "v_mutations",
+    id_key: Optional[str] = None,
+    vgene_key: Optional[str] = None,
+    jgene_key: Optional[str] = None,
+    cdr3_key: Optional[str] = None,
+    mutations_key: Optional[str] = None,
+    locus_key: Optional[str] = None,
+    light_vgene_key: Optional[str] = None,
+    light_jgene_key: Optional[str] = None,
     mutation_delimiter: str = "|",
     ignore_likely_allelic_variants: bool = False,
     allelic_variant_threshold: float = 0.35,
@@ -356,11 +389,11 @@ def clonify(
                     group_by_v=group_by_v,
                     group_by_j=group_by_j,
                     group_by_light_chain_vj=group_by_light_chain_vj,
-                    id_key=id_key,
-                    vgene_key=vgene_key,
-                    jgene_key=jgene_key,
-                    cdr3_key=cdr3_key,
-                    mutations_key=mutations_key,
+                    id_key=(id_key or "sequence_id"),
+                    vgene_key=(vgene_key or "v_gene"),
+                    jgene_key=(jgene_key or "j_gene"),
+                    cdr3_key=(cdr3_key or "cdr3"),
+                    mutations_key=(mutations_key or "v_mutations"),
                     mutation_delimiter=mutation_delimiter,
                     ignore_likely_allelic_variants=ignore_likely_allelic_variants,
                     allelic_variant_threshold=allelic_variant_threshold,
@@ -390,11 +423,11 @@ def clonify(
                 group_by_v=group_by_v,
                 group_by_j=group_by_j,
                 group_by_light_chain_vj=group_by_light_chain_vj,
-                id_key=id_key,
-                vgene_key=vgene_key,
-                jgene_key=jgene_key,
-                cdr3_key=cdr3_key,
-                mutations_key=mutations_key,
+                id_key=(id_key or "sequence_id"),
+                vgene_key=(vgene_key or "v_gene"),
+                jgene_key=(jgene_key or "j_gene"),
+                cdr3_key=(cdr3_key or "cdr3"),
+                mutations_key=(mutations_key or "v_mutations"),
                 mutation_delimiter=mutation_delimiter,
                 ignore_likely_allelic_variants=ignore_likely_allelic_variants,
                 allelic_variant_threshold=allelic_variant_threshold,
@@ -410,7 +443,10 @@ def clonify(
             )
         assignments = {
             sid: lin
-            for sid, lin in zip(df_out[id_key].to_list(), df_out["lineage"].to_list())
+            for sid, lin in zip(
+                df_out[(id_key or "sequence_id")].to_list(),
+                df_out["lineage"].to_list(),
+            )
         }
         if output_path:
             _write_dataframe(df_out, output_path)
@@ -440,6 +476,9 @@ def clonify(
         jgene_key=jgene_key,
         cdr3_key=cdr3_key,
         mutations_key=mutations_key,
+        locus_key=locus_key,
+        light_vgene_key=light_vgene_key,
+        light_jgene_key=light_jgene_key,
         mutation_delimiter=mutation_delimiter,
         ignore_likely_allelic_variants=ignore_likely_allelic_variants,
         allelic_variant_threshold=allelic_variant_threshold,

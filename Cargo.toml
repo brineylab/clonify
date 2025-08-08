@@ -7,6 +7,10 @@ edition = "2021"
 name = "clonify_native"
 crate-type = ["cdylib"]
 
+[features]
+# Stage NN-chain average-linkage rewrite behind feature flag.
+nn_chain = []
+
 [dependencies]
 pyo3 = { version = "0.21", features = ["extension-module", "abi3-py38"] }
 rayon = "1.10"
