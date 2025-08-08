@@ -1,77 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Optional
 
 import click
 import polars as pl
 
-from .clonify_impl import clonify
+from .clonify import clonify as clonify_api
 
 
-def _infer_format_from_extension(file_path: str) -> str:
-    _, ext = os.path.splitext(file_path.lower())
-    if ext in {".csv"}:
-        return "csv"
-    if ext in {".tsv", ".tab"}:
-        return "tsv"
-    if ext in {".parquet", ".pq"}:
-        return "parquet"
-    if ext in {".jsonl", ".ndjson"}:
-        return "ndjson"
-    if ext in {".json"}:
-        return "json"
-    raise click.ClickException(
-        f"Unable to infer file format from extension '{ext}'. Specify --input-format explicitly."
-    )
-
-
-def _read_dataframe(
-    input_path: str,
-    input_format: Optional[str],
-    *,
-    has_header: bool,
-    delimiter: Optional[str],
-) -> pl.DataFrame:
-    fmt = input_format or _infer_format_from_extension(input_path)
-    if fmt == "csv":
-        return pl.read_csv(
-            input_path, has_header=has_header, separator=delimiter or ","
-        )
-    if fmt == "tsv":
-        return pl.read_csv(
-            input_path, has_header=has_header, separator=delimiter or "\t"
-        )
-    if fmt == "parquet":
-        return pl.read_parquet(input_path)
-    if fmt == "ndjson":
-        return pl.read_ndjson(input_path)
-    if fmt == "json":
-        return pl.read_json(input_path)
-    raise click.ClickException(f"Unsupported input format: {fmt}")
-
-
-def _write_dataframe(df: pl.DataFrame, output_path: str) -> None:
-    fmt = _infer_format_from_extension(output_path)
-    if fmt == "csv":
-        df.write_csv(output_path)
-        return
-    if fmt == "tsv":
-        df.write_csv(output_path, separator="\t")
-        return
-    if fmt == "parquet":
-        df.write_parquet(output_path)
-        return
-    if fmt == "ndjson":
-        df.write_ndjson(output_path)
-        return
-    if fmt == "json":
-        df.write_json(output_path)
-        return
-    raise click.ClickException(
-        f"Unsupported output format derived from path: {output_path}"
-    )
+def _write_dataframe(_: pl.DataFrame, __: str) -> None:
+    # Deprecated in CLI; writing is handled in API. Keep stub for BC if referenced.
+    raise click.ClickException("Internal error: writing is handled by API now.")
 
 
 @click.command(context_settings={"show_default": True})
@@ -198,6 +138,18 @@ def _write_dataframe(df: pl.DataFrame, output_path: str) -> None:
     help="Number of threads for native clustering. Defaults to library default.",
 )
 @click.option(
+    "--backend",
+    type=click.Choice(["native", "python"], case_sensitive=False),
+    default="native",
+    help="Select clustering backend: 'native' (Rust) or 'python' (reference).",
+)
+@click.option(
+    "--name-seed",
+    type=int,
+    default=None,
+    help="Optional seed to make lineage names deterministic across backends.",
+)
+@click.option(
     "--verbose/--quiet",
     default=True,
     help="Print progress information.",
@@ -226,25 +178,23 @@ def cli(
     min_seqs_for_allelic_variants: int,
     mnemonic_names: bool,
     n_threads: Optional[int],
+    backend: str,
+    name_seed: Optional[int],
     verbose: bool,
 ) -> None:
     """Run clonify on an input table and write results to a file or stdout.
 
     All parameters mirror the Python API and retain the same defaults.
     """
+    # Input reading/writing is now handled by the clonify() API
     try:
-        df_in = _read_dataframe(
+        assignments, df_out = clonify_api(
             input_path,
-            input_format,
+            backend=backend,
+            input_format=input_format,
             has_header=has_header,
             delimiter=delimiter,
-        )
-    except Exception as exc:  # pragma: no cover - IO handling
-        raise click.ClickException(str(exc)) from exc
-
-    try:
-        assignments, df_out = clonify(
-            df_in,
+            output_path=output_path,
             distance_cutoff=distance_cutoff,
             shared_mutation_bonus=shared_mutation_bonus,
             length_penalty_multiplier=length_penalty_multiplier,
@@ -261,10 +211,11 @@ def cli(
             allelic_variant_threshold=allelic_variant_threshold,
             min_seqs_for_allelic_variants=min_seqs_for_allelic_variants,
             mnemonic_names=mnemonic_names,
+            name_seed=name_seed,
             n_threads=n_threads,
             verbose=verbose,
         )
-    except Exception as exc:  # pragma: no cover - surface native errors nicely
+    except Exception as exc:  # pragma: no cover - surface backend errors nicely
         raise click.ClickException(str(exc)) from exc
 
     if assignments_json is not None:
@@ -276,14 +227,7 @@ def cli(
                 f"Failed to write assignments JSON to {assignments_json}: {exc}"
             ) from exc
 
-    if output_path:
-        try:
-            _write_dataframe(df_out, output_path)
-        except Exception as exc:  # pragma: no cover
-            raise click.ClickException(
-                f"Failed to write output table to {output_path}: {exc}"
-            ) from exc
-    else:
+    if not output_path:
         # Default to CSV on stdout for human-friendliness
         click.echo(df_out.write_csv())
 
