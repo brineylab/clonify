@@ -2,6 +2,9 @@ use ahash::AHashMap;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::prelude::*;
+use rayon::slice::ParallelSliceMut;
+use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug)]
 struct Params {
@@ -14,7 +17,35 @@ struct Params {
 
 #[inline]
 pub(crate) fn hamming(a: &[u8], b: &[u8]) -> usize {
-    a.iter().zip(b).filter(|(x, y)| x != y).count()
+    debug_assert_eq!(a.len(), b.len());
+    let mut cnt: usize = 0;
+    let mut i = 0;
+    let len = a.len();
+    const LANES: usize = 8;
+    let end64 = len.saturating_sub(len % LANES);
+    while i < end64 {
+        let mut x: u64 = 0;
+        unsafe {
+            // read 8 bytes from each slice
+            let pa = a.get_unchecked(i..i + LANES);
+            let pb = b.get_unchecked(i..i + LANES);
+            let ua = u64::from_ne_bytes([pa[0], pa[1], pa[2], pa[3], pa[4], pa[5], pa[6], pa[7]]);
+            let ub = u64::from_ne_bytes([pb[0], pb[1], pb[2], pb[3], pb[4], pb[5], pb[6], pb[7]]);
+            x = ua ^ ub;
+        }
+        // turn any non-zero byte into 0x01 in that lane
+        let mut y = x | (x >> 4);
+        y |= y >> 2;
+        y |= y >> 1;
+        y &= 0x0101_0101_0101_0101u64;
+        cnt += y.count_ones() as usize;
+        i += LANES;
+    }
+    while i < len {
+        if a[i] != b[i] { cnt += 1; }
+        i += 1;
+    }
+    cnt
 }
 
 pub(crate) fn levenshtein(a: &[u8], b: &[u8]) -> usize {
@@ -36,6 +67,84 @@ pub(crate) fn levenshtein(a: &[u8], b: &[u8]) -> usize {
         std::mem::swap(&mut prev, &mut curr);
     }
     prev[m]
+}
+
+#[inline]
+fn levenshtein_banded(a: &[u8], b: &[u8], max_dist: usize) -> usize {
+    // Standard DP with band limiting j around i by max_dist. Returns a value > max_dist if edit distance exceeds band.
+    let n = a.len();
+    let m = b.len();
+    if n == 0 { return m; }
+    if m == 0 { return n; }
+    // If band is wide enough, fall back to full computation
+    if max_dist >= n.max(m) { return levenshtein(a, b); }
+    let inf = max_dist + 1;
+    let mut prev: Vec<usize> = vec![inf; m + 1];
+    let mut curr: Vec<usize> = vec![inf; m + 1];
+    // Initialize prev row with j within band around i=0
+    for j in 0..=m.min(max_dist) { prev[j] = j; }
+    for i in 1..=n {
+        let j_start = if i > max_dist { i - max_dist } else { 1 }; // j >= 1
+        let j_end = (m).min(i + max_dist);
+        // Set curr outside band to inf
+        if j_start > 1 { curr[j_start - 1] = inf; }
+        curr[j_start.saturating_sub(1)] = inf; // safe guard
+        // Set left boundary
+        if j_start == 1 {
+            curr[0] = i; // insertion-only cost at left edge
+        }
+        for j in j_start..=j_end {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            let del = prev[j].saturating_add(1);
+            let ins = curr[j - 1].saturating_add(1);
+            let sub = prev[j - 1].saturating_add(cost);
+            let v = del.min(ins).min(sub);
+            curr[j] = v;
+        }
+        // Set right boundary beyond band
+        if j_end < m { curr[j_end + 1] = inf; }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    let d = prev[m];
+    d
+}
+
+thread_local! {
+    static LV_BUFFERS: RefCell<(Vec<usize>, Vec<usize>)> = RefCell::new((Vec::new(), Vec::new()));
+}
+
+#[inline]
+fn levenshtein_banded_tl(a: &[u8], b: &[u8], max_dist: usize) -> usize {
+    LV_BUFFERS.with(|cell| {
+        let (ref mut prev, ref mut curr) = *&mut *cell.borrow_mut();
+        let n = a.len();
+        let m = b.len();
+        if prev.len() < m + 1 { prev.resize(m + 1, 0); }
+        if curr.len() < m + 1 { curr.resize(m + 1, 0); }
+        let inf = max_dist + 1;
+        // Initialize prev with inf, then band
+        for j in 0..=m { prev[j] = inf; }
+        for j in 0..=m.min(max_dist) { prev[j] = j; }
+        for i in 1..=n {
+            let j_start = if i > max_dist { i - max_dist } else { 1 };
+            let j_end = m.min(i + max_dist);
+            // Fill curr with inf across row to avoid stale values
+            for j in 0..=m { curr[j] = inf; }
+            // Set left boundary within range
+            if j_start == 1 { curr[0] = i; } else if j_start >= 1 && j_start - 1 <= m { curr[j_start - 1] = inf; }
+            for j in j_start..=j_end {
+                let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+                let del = prev[j].saturating_add(1);
+                let ins = curr[j - 1].saturating_add(1);
+                let sub = prev[j - 1].saturating_add(cost);
+                curr[j] = del.min(ins).min(sub);
+            }
+            if j_end < m { curr[j_end + 1] = inf; }
+            // swap
+            for j in 0..=m { std::mem::swap(&mut prev[j], &mut curr[j]); }
+        }
+        prev[m]
+    })
 }
 
 #[inline]
@@ -175,7 +284,26 @@ fn pair_distance(
         return params.distance_cutoff + f64::EPSILON;
     }
 
-    let dist = if len1 == len2 { hamming(s1, s2) } else { levenshtein(s1, s2) } as f64;
+    // Compute a conservative band for Levenshtein based on cutoff window and maximum possible mutation bonus.
+    let dist = if len1 == len2 {
+        hamming(s1, s2) as f64
+    } else {
+        // Maximum possible shared mutations equals the minimum of per-sequence filtered mutation list lengths
+        let a0p = inp.filtered_mut_offsets[i];
+        let a1p = inp.filtered_mut_offsets[i + 1];
+        let b0p = inp.filtered_mut_offsets[j];
+        let b1p = inp.filtered_mut_offsets[j + 1];
+        let max_shared = (a1p - a0p).min(b1p - b0p) as f64;
+        let max_mut_bonus = max_shared * params.shared_mutation_bonus;
+        let allowed = (params.distance_cutoff * min_len - length_penalty - germline_penalty + max_mut_bonus).floor();
+        if allowed.is_finite() && allowed >= 0.0 {
+            let band = allowed as usize;
+            let d = levenshtein_banded_tl(s1, s2, band) as f64;
+            d
+        } else {
+            levenshtein_banded_tl(s1, s2, (len1.max(len2))) as f64
+        }
+    };
 
     // Use precomputed filtered mutation lists
     let a0 = inp.filtered_mut_offsets[i];
@@ -191,14 +319,19 @@ fn pair_distance(
     if score < 0.001 { 0.001 } else { score }
 }
 
+fn check_for_interrupt() -> PyResult<()> {
+    // Briefly acquire the GIL and let Python raise KeyboardInterrupt if signaled
+    Python::with_gil(|py| py.check_signals())
+}
+
 fn average_linkage_cutoff_fallback(
     inp: &NativeInputs,
     params: &Params,
     distance_cutoff: f64,
-) -> Vec<i32> {
+) -> PyResult<Vec<i32>> {
     let n = inp.n;
-    if n == 0 { return vec![]; }
-    if n == 1 { return vec![0]; }
+    if n == 0 { return Ok(vec![]); }
+    if n == 1 { return Ok(vec![0]); }
 
     let mut active: Vec<bool> = vec![true; n];
     let mut labels: Vec<i32> = (0..n as i32).collect();
@@ -208,6 +341,8 @@ fn average_linkage_cutoff_fallback(
     loop {
         let mut best_pair: Option<(usize, usize, f64)> = None;
         for i in 0..n {
+            // Allow Ctrl-C to interrupt between outer iterations
+            check_for_interrupt()?;
             if !active[i] { continue; }
             for j in (i + 1)..n {
                 if !active[j] { continue; }
@@ -249,7 +384,242 @@ fn average_linkage_cutoff_fallback(
         let entry = map.entry(*l).or_insert_with(|| { let v = next; next += 1; v });
         *l = *entry;
     }
-    labels
+    Ok(labels)
+}
+
+#[inline]
+fn condensed_index(n: usize, i: usize, j: usize) -> usize {
+    debug_assert!(i < j);
+    // Number of elements before row i: i * (2n - i - 1) / 2
+    i * (2 * n - i - 1) / 2 + (j - i - 1)
+}
+
+#[inline]
+fn condensed_index_inv(n: usize, k: usize) -> (usize, usize) {
+    // Binary search row i such that k in [base(i), base(i)+row_len)
+    // base(i) = i*(2n - i - 1)/2, row_len = n - 1 - i
+    let mut lo = 0usize;
+    let mut hi = n - 1; // last valid i is n-2; keep hi exclusive sentinel
+    let mut i = 0usize;
+    loop {
+        let mid = (lo + hi) / 2;
+        let base = mid * (2 * n - mid - 1) / 2;
+        let row_len = n - 1 - mid;
+        if k < base {
+            hi = mid;
+        } else if k >= base + row_len {
+            lo = mid + 1;
+        } else {
+            i = mid;
+            break;
+        }
+    }
+    let base = i * (2 * n - i - 1) / 2;
+    let offset = k - base;
+    let j = i + 1 + offset;
+    (i, j)
+}
+
+#[derive(Clone)]
+struct UnionFind {
+    parent: Vec<usize>,
+    size: Vec<usize>,
+}
+
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        Self { parent: (0..n).collect(), size: vec![1; n] }
+    }
+    fn find(&mut self, x: usize) -> usize {
+        if self.parent[x] != x {
+            let root = self.find(self.parent[x]);
+            self.parent[x] = root;
+        }
+        self.parent[x]
+    }
+    fn union(&mut self, a: usize, b: usize) {
+        let mut ra = self.find(a);
+        let mut rb = self.find(b);
+        if ra == rb { return; }
+        if self.size[ra] < self.size[rb] { std::mem::swap(&mut ra, &mut rb); }
+        self.parent[rb] = ra;
+        self.size[ra] += self.size[rb];
+    }
+}
+
+fn average_linkage_cutoff_nn_chain(
+    inp: &NativeInputs,
+    params: &Params,
+    distance_cutoff: f64,
+) -> PyResult<Vec<i32>> {
+    let n = inp.n;
+    if n == 0 { return Ok(vec![]); }
+    if n == 1 { return Ok(vec![0]); }
+
+    // Build condensed distance matrix D for singletons
+    // Layout: for i in [0..n-1), j in (i+1..n) consecutively
+    let m = n * (n - 1) / 2;
+    let mut dist: Vec<f64> = vec![0.0; m];
+    // Parallelize by slicing the output vector into disjoint chunks
+    let chunk_size = 64 * 1024; // tuneable
+    dist.par_chunks_mut(chunk_size).enumerate().for_each(|(chunk_idx, chunk)| {
+        let start = chunk_idx * chunk_size;
+        for (t, cell) in chunk.iter_mut().enumerate() {
+            let k = start + t;
+            let (i, j) = condensed_index_inv(n, k);
+            *cell = pair_distance(inp, i, j, params);
+        }
+    });
+
+    // Active list as a doubly linked list using indices 0..n-1
+    let mut start: Option<usize> = Some(0);
+    let mut succ: Vec<Option<usize>> = (0..n).map(|i| if i + 1 < n { Some(i + 1) } else { None }).collect();
+    let mut pred: Vec<Option<usize>> = (0..n).map(|i| if i == 0 { None } else { Some(i - 1) }).collect();
+
+    let mut is_active: Vec<bool> = vec![true; n];
+    let mut members: Vec<usize> = vec![1; n];
+    let mut uf = UnionFind::new(n);
+
+    // Helper functions to get/set distances in condensed matrix
+    let get_dist = |a: usize, b: usize, dist: &Vec<f64>| -> f64 {
+        debug_assert!(a != b);
+        let (i, j) = if a < b { (a, b) } else { (b, a) };
+        dist[condensed_index(n, i, j)]
+    };
+    let mut set_dist = |a: usize, b: usize, val: f64, dist: &mut Vec<f64>| {
+        debug_assert!(a != b);
+        let (i, j) = if a < b { (a, b) } else { (b, a) };
+        let idx = condensed_index(n, i, j);
+        dist[idx] = val;
+    };
+
+    // NN-chain workspace
+    let mut chain: Vec<usize> = vec![0; n];
+    let mut chain_tip: usize = 0;
+
+    // Helper to iterate active nodes from a given start
+    let next_active = |cur: Option<usize>, succ: &Vec<Option<usize>>| -> Option<usize> {
+        match cur {
+            None => None,
+            Some(i) => succ[i],
+        }
+    };
+
+    // Function to remove an index from active list
+    let mut remove_active = |idx: usize, start: &mut Option<usize>, succ: &mut Vec<Option<usize>>, pred: &mut Vec<Option<usize>>, is_active: &mut Vec<bool>| {
+        is_active[idx] = false;
+        let p = pred[idx];
+        let s = succ[idx];
+        if let Some(pp) = p { succ[pp] = s; } else { *start = s; }
+        if let Some(ss) = s { pred[ss] = p; }
+        succ[idx] = None;
+        pred[idx] = None;
+    };
+
+    // Perform up to n-1 merges; early-stop if minimal distance exceeds cutoff
+    let mut merges_done = 0usize;
+    let mut last_signal_check = Instant::now();
+    while merges_done < n - 1 {
+        // Throttle KeyboardInterrupt checks (time-based, ~every 100ms)
+        if last_signal_check.elapsed() >= Duration::from_millis(100) {
+            Python::with_gil(|py| { let _ = py.check_signals(); });
+            last_signal_check = Instant::now();
+        }
+
+        let (mut idx1, mut idx2, mut min_d): (usize, usize, f64);
+
+        if chain_tip <= 3 {
+            // Reset chain starting from list head
+            let i0 = match start { Some(x) => x, None => break };
+            chain[0] = i0;
+            chain_tip = 1;
+            // pick nearest neighbor of i0
+            let mut nn = succ[i0].expect("at least two active items expected");
+            let mut best = get_dist(i0, nn, &dist);
+            // scan remaining actives with early stop if minimal possible distance reached
+            let mut it = succ[nn];
+            while let Some(i) = it {
+                let d = get_dist(i0, i, &dist);
+                if d < best {
+                    best = d; nn = i;
+                    if best <= 0.001 { break; }
+                }
+                it = succ[i];
+            }
+            idx1 = i0; idx2 = nn; min_d = best;
+        } else {
+            // Pop last 3 and resume
+            chain_tip -= 3;
+            idx1 = chain[chain_tip - 1];
+            idx2 = chain[chain_tip];
+            min_d = get_dist(idx1, idx2, &dist);
+        }
+
+        // Build chain until reciprocal nearest neighbors
+        loop {
+            chain[chain_tip] = idx2;
+            // Find nearest neighbor of idx2 among active nodes
+            let mut best = f64::INFINITY;
+            let mut best_i = 0usize;
+            let mut it = start;
+            while let Some(i) = it {
+                if i != idx2 && is_active[i] {
+                    let d = get_dist(i, idx2, &dist);
+                    if d < best { best = d; best_i = i; if best <= 0.001 { /* can't get smaller */ break; } }
+                }
+                it = next_active(it, &succ);
+            }
+            idx2 = best_i;
+            let old = idx1;
+            idx1 = chain[chain_tip];
+            chain_tip += 1;
+            min_d = best;
+            if idx2 == chain[chain_tip - 2] { break; }
+            let _ = old; // silence unused var in debug
+        }
+
+        // If the minimal merge distance exceeds cutoff, we can stop
+        if min_d > distance_cutoff { break; }
+
+        // Merge idx1 into idx2 (ensure idx1 < idx2 for update order not required, we handle generically)
+        let size1 = members[idx1] as f64;
+        let size2 = members[idx2] as f64;
+        let s = size1 / (size1 + size2);
+        let t = 1.0 - s;
+
+        // Update distances from new cluster idx2 to all other active nodes k
+        let mut it = start;
+        while let Some(k) = it {
+            if k != idx1 && k != idx2 && is_active[k] {
+                let d1 = get_dist(idx1, k, &dist);
+                let d2 = get_dist(idx2, k, &dist);
+                set_dist(idx2, k, s * d1 + t * d2, &mut dist);
+            }
+            it = next_active(it, &succ);
+        }
+
+        // Remove idx1 from active list
+        remove_active(idx1, &mut start, &mut succ, &mut pred, &mut is_active);
+        // Update size
+        members[idx2] += members[idx1];
+        // Record merge for output labels via union-find
+        uf.union(idx1, idx2);
+
+        // Prepare for next iteration
+        merges_done += 1;
+        if chain_tip > 0 { chain_tip -= 1; }
+    }
+
+    // Build labels from union-find roots
+    let mut root_to_label: AHashMap<usize, i32> = AHashMap::new();
+    let mut next_label: i32 = 0;
+    let mut labels: Vec<i32> = Vec::with_capacity(n);
+    for i in 0..n {
+        let r = uf.find(i);
+        let entry = root_to_label.entry(r).or_insert_with(|| { let v = next_label; next_label += 1; v });
+        labels.push(*entry);
+    }
+    Ok(labels)
 }
 
 #[cfg(feature = "nn_chain")]
@@ -257,9 +627,8 @@ fn average_linkage_cutoff_impl(
     inp: &NativeInputs,
     params: &Params,
     distance_cutoff: f64,
-) -> Vec<i32> {
-    // Placeholder: will be replaced by NN-chain implementation; use fallback for now
-    average_linkage_cutoff_fallback(inp, params, distance_cutoff)
+) -> PyResult<Vec<i32>> {
+    average_linkage_cutoff_nn_chain(inp, params, distance_cutoff)
 }
 
 #[cfg(not(feature = "nn_chain"))]
@@ -267,8 +636,9 @@ fn average_linkage_cutoff_impl(
     inp: &NativeInputs,
     params: &Params,
     distance_cutoff: f64,
-) -> Vec<i32> {
-    average_linkage_cutoff_fallback(inp, params, distance_cutoff)
+) -> PyResult<Vec<i32>> {
+    // Default to optimized NN-chain implementation as the primary path
+    average_linkage_cutoff_nn_chain(inp, params, distance_cutoff)
 }
 
 #[pyfunction]
@@ -283,7 +653,10 @@ fn average_linkage_cutoff(
 ) -> PyResult<Vec<i32>> {
     if let Some(t) = n_threads { rayon::ThreadPoolBuilder::new().num_threads(t).build_global().ok(); }
     let params = Params { shared_mutation_bonus, length_penalty_multiplier, v_penalty, j_penalty, distance_cutoff };
-    let labels = average_linkage_cutoff_impl(inp, &params, distance_cutoff);
+    // Release the GIL during heavy computation
+    let labels = Python::with_gil(|py| {
+        py.allow_threads(|| average_linkage_cutoff_impl(inp, &params, distance_cutoff))
+    })?;
     Ok(labels)
 }
 

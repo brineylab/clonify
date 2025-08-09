@@ -9,6 +9,66 @@ from natsort import natsorted
 
 from .naming import assign_names, generate_cluster_name
 
+
+# ------------------------------
+# Helpers used by the Python (reference) implementation
+# Moved to module scope so they are picklable under spawn/forkserver
+# ------------------------------
+def pairwise_distance(
+    s1: object,
+    s2: object,
+    *,
+    shared_mutation_bonus: float = 0.35,
+    length_penalty_multiplier: float | int = 2,
+    vgene_field: str = "v_gene",
+    jgene_field: str = "j_gene",
+    cdr3_field: str = "cdr3",
+    mutations_field: str = "mutations",
+    likely_allelic_variants: Optional[Iterable[object]] = None,
+    debug: bool = False,
+) -> float:
+    from rapidfuzz.distance.Levenshtein import (
+        distance as levenshtein_distance,  # type: ignore
+    )
+
+    germline_penalty = 0
+    if s1[vgene_field] != s2[vgene_field]:
+        germline_penalty += 10
+    if s1[jgene_field] != s2[jgene_field]:
+        germline_penalty += 5
+
+    s1_len = len(s1[cdr3_field])
+    s2_len = len(s2[cdr3_field])
+    length_penalty = abs(s1_len - s2_len) * float(length_penalty_multiplier)
+    length = min(s1_len, s2_len)
+
+    if s1_len == s2_len:
+        dist = sum([a != b for a, b in zip(s1[cdr3_field], s2[cdr3_field])])
+    else:
+        dist = levenshtein_distance(s1[cdr3_field], s2[cdr3_field])
+
+    likely_allelic_variants = likely_allelic_variants or []
+    mutation_bonus = (
+        len(
+            set(s1[mutations_field])
+            & set(s2[mutations_field]) - set(likely_allelic_variants)
+        )
+        * shared_mutation_bonus
+    )
+    score = germline_penalty + (
+        (dist + length_penalty - mutation_bonus) / max(length, 1)
+    )
+    return max(score, 0.001)
+
+
+def batch_pairwise_distance(seqs, batches, **kwargs):
+    distances = []
+    for i1, i2 in batches:
+        d = pairwise_distance(seqs[i1], seqs[i2], **kwargs)
+        distances.append(d)
+    return distances
+
+
 # ------------------------------
 # Native (Rust-backed) implementation
 # ------------------------------
@@ -272,7 +332,20 @@ def clonify_native(
 
     assign_total: Dict[str, str] = {}
     out_rows: List[Tuple[str, str]] = []
-    for group_df in groups:
+
+    # progress bar similar to python backend: updates per V/J group
+    if verbose:
+        print("- assigning lineages:")
+        try:
+            from tqdm.auto import tqdm  # type: ignore
+
+            group_iter = tqdm(groups)
+        except Exception:
+            group_iter = groups
+    else:
+        group_iter = groups
+
+    for group_df in group_iter:
         ids: List[str] = group_df[resolved_id_key].to_list()
         if len(ids) == 1:
             name = generate_cluster_name(
@@ -549,57 +622,10 @@ def clonify_python(
     )
     from abutils.tools.cluster import cluster  # type: ignore
     from abutils.utils.utilities import generate_batches  # type: ignore
-    from rapidfuzz.distance.Levenshtein import (
-        distance as levenshtein_distance,  # type: ignore
-    )
+
+    # levenshtein_distance is imported in module-scope helper
     from scipy.cluster.hierarchy import fcluster  # type: ignore
     from tqdm.auto import tqdm  # type: ignore
-
-    def batch_pairwise_distance(seqs, batches, **kwargs):
-        distances = []
-        for i1, i2 in batches:
-            d = pairwise_distance(seqs[i1], seqs[i2], **kwargs)
-            distances.append(d)
-        return distances
-
-    def pairwise_distance(
-        s1: Sequence,
-        s2: Sequence,
-        shared_mutation_bonus: float = 0.35,
-        length_penalty_multiplier: Union[int, float] = 2,
-        vgene_field: str = "v_gene",
-        jgene_field: str = "j_gene",
-        cdr3_field: str = "cdr3",
-        mutations_field: str = "mutations",
-        likely_allelic_variants: Optional[Iterable] = None,
-        debug: bool = False,
-    ) -> float:
-        germline_penalty = 0
-        if s1[vgene_field] != s2[vgene_field]:
-            germline_penalty += 10
-        if s1[jgene_field] != s2[jgene_field]:
-            germline_penalty += 5
-
-        s1_len = len(s1[cdr3_field])
-        s2_len = len(s2[cdr3_field])
-        length_penalty = abs(s1_len - s2_len) * length_penalty_multiplier
-        length = min(s1_len, s2_len)
-
-        if s1_len == s2_len:
-            dist = sum([a != b for a, b in zip(s1[cdr3_field], s2[cdr3_field])])
-        else:
-            dist = levenshtein_distance(s1[cdr3_field], s2[cdr3_field])
-
-        likely_allelic_variants = likely_allelic_variants or []
-        mutation_bonus = (
-            len(
-                set(s1[mutations_field])
-                & set(s2[mutations_field]) - set(likely_allelic_variants)
-            )
-            * shared_mutation_bonus
-        )
-        score = germline_penalty + ((dist + length_penalty - mutation_bonus) / length)
-        return max(score, 0.001)
 
     # set up file paths
     if output_path is not None:
@@ -746,7 +772,7 @@ def clonify_python(
     # progress bar
     if verbose:
         print("- assigning lineages:")
-        sequence_groups = tqdm(sequence_groups, position=4)
+        sequence_groups = tqdm(sequence_groups)
 
     # clonify
     for seqs in sequence_groups:
