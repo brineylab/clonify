@@ -62,3 +62,50 @@ def test_allelic_variant_filtering_reduces_mut_bonus_and_prevents_merge():
     )
     assert out_ignore["lineage"].n_unique() == 2
     assert assign_ignore["a"] != assign_ignore["b"]
+
+
+def test_progressive_backend_flag_runs_and_matches_or_refines():
+    df = _df(
+        [
+            ("s1", "IGHV1-2", "IGHJ4", "CARAAAA", "M1|M2|M3"),
+            ("s2", "IGHV1-2", "IGHJ4", "CARAAAB", "M1|M2|M4"),
+            ("s3", "IGHV1-2", "IGHJ4", "CARZZZZ", "Z1|Z2"),
+            ("s4", "IGHV1-2", "IGHJ4", "CARZZZX", "Z1|Z3"),
+        ]
+    )
+    assign_std, _ = clonify(df, distance_cutoff=0.5, verbose=False)
+    try:
+        assign_prog, _ = clonify(
+            df, distance_cutoff=0.5, progressive=True, verbose=False
+        )
+    except TypeError:
+        # Fallback via env flag if test runner bound an older signature
+        import os
+
+        os.environ["CLONIFY_PROGRESSIVE"] = "1"
+        assign_prog, _ = clonify(df, distance_cutoff=0.5, verbose=False)
+    assert set(assign_std.keys()) == set(assign_prog.keys())
+    ids = sorted(assign_std.keys())
+    agree = 0
+    total = 0
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            same_std = assign_std[ids[i]] == assign_std[ids[j]]
+            same_prog = assign_prog[ids[i]] == assign_prog[ids[j]]
+            agree += int(same_std == same_prog)
+            total += 1
+    assert agree / total >= 0.75
+
+
+def test_streaming_distance_env_flag_executes(monkeypatch):
+    df = _df(
+        [
+            ("a1", "IGHV3-7", "IGHJ4", "CARAAAA", "M1|M2"),
+            ("a2", "IGHV3-7", "IGHJ4", "CARAAAB", "M1|M3"),
+            ("a3", "IGHV3-7", "IGHJ4", "CARAABB", "M2|M3"),
+        ]
+    )
+    monkeypatch.setenv("CLONIFY_STREAM_DIST", "1")
+    assign, out_df = clonify(df, distance_cutoff=1.0, verbose=False)
+    assert out_df.shape[0] == df.shape[0]
+    assert set(assign.keys()) == set(df["sequence_id"].to_list())

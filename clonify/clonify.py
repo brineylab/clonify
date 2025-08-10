@@ -73,7 +73,11 @@ def batch_pairwise_distance(seqs, batches, **kwargs):
 # Native (Rust-backed) implementation
 # ------------------------------
 try:
-    from clonify._native import NativeInputs, average_linkage_cutoff
+    from clonify._native import (
+        NativeInputs,
+        average_linkage_cutoff,
+        average_linkage_cutoff_progressive,
+    )
 except Exception as e:  # pragma: no cover
     raise RuntimeError(
         "clonify native extension not built. Install with `pip install .` or `uv pip install .` from repo root."
@@ -250,6 +254,7 @@ def clonify_native(
     mnemonic_names: bool = True,
     name_seed: Optional[int] = None,
     n_threads: Optional[int] = None,
+    progressive: bool = False,
     verbose: bool = True,
 ) -> Tuple[Dict[str, str], pl.DataFrame]:
     # Resolve dynamic defaults for keys based on schema
@@ -345,6 +350,16 @@ def clonify_native(
     else:
         group_iter = groups
 
+    import os as _os
+
+    env_prog = _os.environ.get("CLONIFY_PROGRESSIVE", "0") in {
+        "1",
+        "true",
+        "TRUE",
+        "yes",
+        "YES",
+    }
+    progressive_effective = progressive or env_prog
     for group_df in group_iter:
         ids: List[str] = group_df[resolved_id_key].to_list()
         if len(ids) == 1:
@@ -376,15 +391,26 @@ def clonify_native(
             v_allelic,
         )
 
-        labels = average_linkage_cutoff(
-            native_inp,
-            float(shared_mutation_bonus),
-            float(length_penalty_multiplier),
-            10.0,
-            5.0,
-            float(distance_cutoff),
-            n_threads,
-        )
+        if progressive_effective:
+            labels = average_linkage_cutoff_progressive(
+                native_inp,
+                float(shared_mutation_bonus),
+                float(length_penalty_multiplier),
+                10.0,
+                5.0,
+                float(distance_cutoff),
+                n_threads,
+            )
+        else:
+            labels = average_linkage_cutoff(
+                native_inp,
+                float(shared_mutation_bonus),
+                float(length_penalty_multiplier),
+                10.0,
+                5.0,
+                float(distance_cutoff),
+                n_threads,
+            )
         label_list = list(labels)  # type: ignore[arg-type]
         assign = assign_names(
             label_list, ids, mnemonic_names=mnemonic_names, seed=name_seed
@@ -434,6 +460,7 @@ def clonify(
     mnemonic_names: bool = True,
     name_seed: Optional[int] = None,
     n_threads: Optional[int] = None,
+    progressive: bool = False,
     verbose: bool = True,
 ) -> Tuple[Dict[str, str], pl.DataFrame]:
     """Public API: dispatch to native (Rust) or reference Python backend.
@@ -559,6 +586,7 @@ def clonify(
         mnemonic_names=mnemonic_names,
         name_seed=name_seed,
         n_threads=n_threads,
+        progressive=progressive,
         verbose=verbose,
     )
     if output_path:

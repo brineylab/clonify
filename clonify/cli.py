@@ -168,6 +168,11 @@ def _write_dataframe(_: pl.DataFrame, __: str) -> None:
     help="Select clustering backend: 'native' (Rust) or 'python' (reference).",
 )
 @click.option(
+    "--progressive/--no-progressive",
+    default=False,
+    help="Use progressive approximate clustering (LSH-guided) in native backend.",
+)
+@click.option(
     "--name-seed",
     type=int,
     default=None,
@@ -208,6 +213,7 @@ def cli(
     backend: str,
     name_seed: Optional[int],
     verbose: bool,
+    progressive: bool,
 ) -> None:
     """Run clonify on an input table and write results to a file or stdout.
 
@@ -243,6 +249,7 @@ def cli(
             mnemonic_names=mnemonic_names,
             name_seed=name_seed,
             n_threads=n_threads,
+            progressive=progressive,
             verbose=verbose,
         )
     except Exception as exc:  # pragma: no cover - surface backend errors nicely

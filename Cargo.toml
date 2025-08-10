@@ -18,6 +18,8 @@ bitvec = "1.0"
 ahash = "0.8"
 itertools = "0.12"
 simdutf8 = "0.1"
+memmap2 = "0.9"
+bytemuck = { version = "1.15", features = ["extern_crate_alloc"] }
 
 [profile.release]
 opt-level = 3

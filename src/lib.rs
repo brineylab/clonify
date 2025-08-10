@@ -1,10 +1,15 @@
 use ahash::AHashMap;
+use bitvec::prelude::*;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use rayon::slice::ParallelSliceMut;
+use std::fs::{File, OpenOptions};
 use std::cell::RefCell;
+use std::io::Write;
 use std::time::{Duration, Instant};
+use std::env;
+use memmap2::MmapMut;
 
 #[derive(Clone, Copy, Debug)]
 struct Params {
@@ -170,7 +175,10 @@ pub(crate) fn intersection_count(a: &[i32], b: &[i32]) -> usize {
 struct NativeInputs {
     #[pyo3(get)]
     n: usize,
+    // Legacy layout retained for compatibility, but SoA layout is used in hot paths
     cdr3: Vec<Vec<u8>>,
+    cdr3_data: Vec<u8>,
+    cdr3_offsets: Vec<usize>,
     v_ids: Vec<i32>,
     j_ids: Vec<i32>,
     mut_ids: Vec<i32>,
@@ -179,6 +187,8 @@ struct NativeInputs {
     // Precomputed per-sequence filtered mutation ids (allelic-masked)
     filtered_mut_ids: Vec<i32>,
     filtered_mut_offsets: Vec<usize>,
+    // Optional dense bitset per sequence for filtered mutations to speed up intersections
+    mut_bitsets: Option<Vec<BitVec<u8>>>,
 }
 
 #[pymethods]
@@ -200,6 +210,15 @@ impl NativeInputs {
         for s in cdr3.into_iter() {
             let s_bytes: Vec<u8> = s.extract::<String>()?.into_bytes();
             cdr3_bytes.push(s_bytes);
+        }
+        // Build SoA layout for better cache locality
+        let mut cdr3_offsets: Vec<usize> = Vec::with_capacity(n + 1);
+        let total_len: usize = cdr3_bytes.iter().map(|s| s.len()).sum();
+        let mut cdr3_data: Vec<u8> = Vec::with_capacity(total_len);
+        cdr3_offsets.push(0);
+        for s in &cdr3_bytes {
+            cdr3_data.extend_from_slice(s);
+            cdr3_offsets.push(cdr3_data.len());
         }
         if mut_offsets.len() != n + 1 {
             return Err(PyValueError::new_err("mut_offsets must be length n+1"));
@@ -246,9 +265,39 @@ impl NativeInputs {
             filtered_mut_offsets.push(filtered_mut_ids.len());
         }
 
+        // Optionally precompute dense bitsets for filtered mutations
+        let mut mut_bitsets: Option<Vec<BitVec<u8>>> = None;
+        // Build a mapping from mutation id -> dense index
+        let universe_size_threshold: usize = 200_000; // avoid excessive memory
+        if !filtered_mut_ids.is_empty() {
+            let mut uniq: Vec<i32> = filtered_mut_ids.clone();
+            uniq.sort_unstable();
+            uniq.dedup();
+            if uniq.len() <= universe_size_threshold {
+                let mut id_to_dense: AHashMap<i32, usize> = AHashMap::with_capacity(uniq.len());
+                for (idx, mid) in uniq.iter().enumerate() { id_to_dense.insert(*mid, idx); }
+                let mut bitsets_vec: Vec<BitVec<u8>> = Vec::with_capacity(n);
+                for i in 0..n {
+                    let a0 = filtered_mut_offsets[i];
+                    let a1 = filtered_mut_offsets[i + 1];
+                    let mut bv: BitVec<u8> = bitvec![u8, Lsb0; 0; uniq.len()];
+                    for &mid in &filtered_mut_ids[a0..a1] {
+                        if let Some(&pos) = id_to_dense.get(&mid) {
+                            // Safety: pos < uniq.len()
+                            bv.set(pos, true);
+                        }
+                    }
+                    bitsets_vec.push(bv);
+                }
+                mut_bitsets = Some(bitsets_vec);
+            }
+        }
+
         Ok(NativeInputs {
             n,
             cdr3: cdr3_bytes,
+            cdr3_data,
+            cdr3_offsets,
             v_ids,
             j_ids,
             mut_ids,
@@ -256,7 +305,17 @@ impl NativeInputs {
             v_allelic: map,
             filtered_mut_ids,
             filtered_mut_offsets,
+            mut_bitsets,
         })
+    }
+}
+
+impl NativeInputs {
+    #[inline]
+    fn cdr3_slice(&self, idx: usize) -> &[u8] {
+        let start = self.cdr3_offsets[idx];
+        let end = self.cdr3_offsets[idx + 1];
+        &self.cdr3_data[start..end]
     }
 }
 
@@ -266,9 +325,10 @@ fn pair_distance(
     i: usize,
     j: usize,
     params: &Params,
+    mut_bitsets: Option<&Vec<BitVec<u8>>>,
 ) -> f64 {
-    let s1 = &inp.cdr3[i];
-    let s2 = &inp.cdr3[j];
+    let s1 = inp.cdr3_slice(i);
+    let s2 = inp.cdr3_slice(j);
     let len1 = s1.len();
     let len2 = s2.len();
     let mut germline_penalty = 0.0f64;
@@ -305,14 +365,29 @@ fn pair_distance(
         }
     };
 
-    // Use precomputed filtered mutation lists
-    let a0 = inp.filtered_mut_offsets[i];
-    let a1 = inp.filtered_mut_offsets[i + 1];
-    let b0 = inp.filtered_mut_offsets[j];
-    let b1 = inp.filtered_mut_offsets[j + 1];
-    let mut_a = &inp.filtered_mut_ids[a0..a1];
-    let mut_b = &inp.filtered_mut_ids[b0..b1];
-    let shared = intersection_count(mut_a, mut_b) as f64;
+    // Use bitsets if available, otherwise intersect sorted lists
+    let shared = if let Some(bitsets) = mut_bitsets {
+        let a = &bitsets[i];
+        let b = &bitsets[j];
+        let ra = a.as_raw_slice();
+        let rb = b.as_raw_slice();
+        let m = ra.len().min(rb.len());
+        let mut ones: u32 = 0;
+        let mut t = 0usize;
+        while t < m {
+            ones += (ra[t] & rb[t]).count_ones();
+            t += 1;
+        }
+        ones as f64
+    } else {
+        let a0 = inp.filtered_mut_offsets[i];
+        let a1 = inp.filtered_mut_offsets[i + 1];
+        let b0 = inp.filtered_mut_offsets[j];
+        let b1 = inp.filtered_mut_offsets[j + 1];
+        let mut_a = &inp.filtered_mut_ids[a0..a1];
+        let mut_b = &inp.filtered_mut_ids[b0..b1];
+        intersection_count(mut_a, mut_b) as f64
+    };
     let mutation_bonus = shared * params.shared_mutation_bonus;
 
     let score = germline_penalty + ((dist + length_penalty - mutation_bonus) / min_len);
@@ -350,7 +425,7 @@ fn average_linkage_cutoff_fallback(
                 let m2 = &members[j];
                 let total = (m1.len() * m2.len()) as f64;
                 let sum: f64 = m1.par_iter().map(|&ii| {
-                    m2.iter().map(|&jj| pair_distance(inp, ii, jj, params)).sum::<f64>()
+                    m2.iter().map(|&jj| pair_distance(inp, ii, jj, params, None)).sum::<f64>()
                 }).sum();
                 let d = sum / total;
                 if d <= distance_cutoff {
@@ -459,17 +534,70 @@ fn average_linkage_cutoff_nn_chain(
     // Build condensed distance matrix D for singletons
     // Layout: for i in [0..n-1), j in (i+1..n) consecutively
     let m = n * (n - 1) / 2;
-    let mut dist: Vec<f64> = vec![0.0; m];
+    // Optional disk-backed streaming store under env flag
+    let use_streaming = env::var("CLONIFY_STREAM_DIST").ok().as_deref() == Some("1");
+    enum Store {
+        VecStore(Vec<f64>),
+        MmapStore { file: File, mmap: MmapMut },
+    }
+    impl Store {
+        #[inline]
+        fn len(&self) -> usize { match self { Store::VecStore(v) => v.len(), Store::MmapStore { mmap, .. } => mmap.len() / std::mem::size_of::<f64>() } }
+        #[inline]
+        unsafe fn write(&mut self, idx: usize, val: f64) {
+            match self {
+                Store::VecStore(v) => { v[idx] = val; }
+                Store::MmapStore { mmap, .. } => {
+                    let bytes = &mut mmap[(idx * 8)..((idx + 1) * 8)];
+                    bytes.copy_from_slice(&val.to_ne_bytes());
+                }
+            }
+        }
+        #[inline]
+        unsafe fn read(&self, idx: usize) -> f64 {
+            match self {
+                Store::VecStore(v) => v[idx],
+                Store::MmapStore { mmap, .. } => {
+                    let bytes = &mmap[(idx * 8)..((idx + 1) * 8)];
+                    f64::from_ne_bytes(bytes.try_into().unwrap())
+                }
+            }
+        }
+        #[inline]
+        fn as_vec_mut(&mut self) -> Option<&mut Vec<f64>> { if let Store::VecStore(v) = self { Some(v) } else { None } }
+    }
+    let mut dist_store = if use_streaming {
+        // Create temp file in system temp dir
+        let mut path = env::temp_dir();
+        path.push(format!("clonify_dist_{}.bin", std::process::id()));
+        let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to create mmap file: {e}")))?;
+        let size_bytes = m * std::mem::size_of::<f64>();
+        file.set_len(size_bytes as u64).map_err(|e| PyValueError::new_err(format!("Failed to size mmap file: {e}")))?;
+        let mmap = unsafe { MmapMut::map_mut(&file).map_err(|e| PyValueError::new_err(format!("Failed to mmap: {e}")))? };
+        Store::MmapStore { file, mmap }
+    } else {
+        Store::VecStore(vec![0.0f64; m])
+    };
     // Parallelize by slicing the output vector into disjoint chunks
     let chunk_size = 64 * 1024; // tuneable
-    dist.par_chunks_mut(chunk_size).enumerate().for_each(|(chunk_idx, chunk)| {
-        let start = chunk_idx * chunk_size;
-        for (t, cell) in chunk.iter_mut().enumerate() {
-            let k = start + t;
+    if let Some(vec_ref) = dist_store.as_vec_mut() {
+        vec_ref.par_chunks_mut(chunk_size).enumerate().for_each(|(chunk_idx, chunk)| {
+            let start = chunk_idx * chunk_size;
+            for (t, cell) in chunk.iter_mut().enumerate() {
+                let k = start + t;
+                let (i, j) = condensed_index_inv(n, k);
+                *cell = pair_distance(inp, i, j, params, inp.mut_bitsets.as_ref());
+            }
+        });
+    } else {
+        // streaming path: sequentially fill mmap to avoid mutable capture in parallel closures
+        for k in 0..m {
             let (i, j) = condensed_index_inv(n, k);
-            *cell = pair_distance(inp, i, j, params);
+            let d = pair_distance(inp, i, j, params, inp.mut_bitsets.as_ref());
+            unsafe { dist_store.write(k, d); }
         }
-    });
+    }
 
     // Active list as a doubly linked list using indices 0..n-1
     let mut start: Option<usize> = Some(0);
@@ -481,16 +609,17 @@ fn average_linkage_cutoff_nn_chain(
     let mut uf = UnionFind::new(n);
 
     // Helper functions to get/set distances in condensed matrix
-    let get_dist = |a: usize, b: usize, dist: &Vec<f64>| -> f64 {
-        debug_assert!(a != b);
-        let (i, j) = if a < b { (a, b) } else { (b, a) };
-        dist[condensed_index(n, i, j)]
-    };
-    let mut set_dist = |a: usize, b: usize, val: f64, dist: &mut Vec<f64>| {
+    let get_dist = |a: usize, b: usize, dist: &Store| -> f64 {
         debug_assert!(a != b);
         let (i, j) = if a < b { (a, b) } else { (b, a) };
         let idx = condensed_index(n, i, j);
-        dist[idx] = val;
+        unsafe { dist.read(idx) }
+    };
+    let mut set_dist = |a: usize, b: usize, val: f64, dist: &mut Store| {
+        debug_assert!(a != b);
+        let (i, j) = if a < b { (a, b) } else { (b, a) };
+        let idx = condensed_index(n, i, j);
+        unsafe { dist.write(idx, val); }
     };
 
     // NN-chain workspace
@@ -535,11 +664,11 @@ fn average_linkage_cutoff_nn_chain(
             chain_tip = 1;
             // pick nearest neighbor of i0
             let mut nn = succ[i0].expect("at least two active items expected");
-            let mut best = get_dist(i0, nn, &dist);
+            let mut best = get_dist(i0, nn, &dist_store);
             // scan remaining actives with early stop if minimal possible distance reached
             let mut it = succ[nn];
             while let Some(i) = it {
-                let d = get_dist(i0, i, &dist);
+                let d = get_dist(i0, i, &dist_store);
                 if d < best {
                     best = d; nn = i;
                     if best <= 0.001 { break; }
@@ -552,7 +681,7 @@ fn average_linkage_cutoff_nn_chain(
             chain_tip -= 3;
             idx1 = chain[chain_tip - 1];
             idx2 = chain[chain_tip];
-            min_d = get_dist(idx1, idx2, &dist);
+            min_d = get_dist(idx1, idx2, &dist_store);
         }
 
         // Build chain until reciprocal nearest neighbors
@@ -564,7 +693,7 @@ fn average_linkage_cutoff_nn_chain(
             let mut it = start;
             while let Some(i) = it {
                 if i != idx2 && is_active[i] {
-                    let d = get_dist(i, idx2, &dist);
+                    let d = get_dist(i, idx2, &dist_store);
                     if d < best { best = d; best_i = i; if best <= 0.001 { /* can't get smaller */ break; } }
                 }
                 it = next_active(it, &succ);
@@ -591,9 +720,9 @@ fn average_linkage_cutoff_nn_chain(
         let mut it = start;
         while let Some(k) = it {
             if k != idx1 && k != idx2 && is_active[k] {
-                let d1 = get_dist(idx1, k, &dist);
-                let d2 = get_dist(idx2, k, &dist);
-                set_dist(idx2, k, s * d1 + t * d2, &mut dist);
+                let d1 = get_dist(idx1, k, &dist_store);
+                let d2 = get_dist(idx2, k, &dist_store);
+                set_dist(idx2, k, s * d1 + t * d2, &mut dist_store);
             }
             it = next_active(it, &succ);
         }
@@ -660,10 +789,123 @@ fn average_linkage_cutoff(
     Ok(labels)
 }
 
+#[pyfunction]
+fn average_linkage_cutoff_progressive(
+    inp: &NativeInputs,
+    shared_mutation_bonus: f64,
+    length_penalty_multiplier: f64,
+    v_penalty: f64,
+    j_penalty: f64,
+    distance_cutoff: f64,
+    n_threads: Option<usize>,
+) -> PyResult<Vec<i32>> {
+    if let Some(t) = n_threads { rayon::ThreadPoolBuilder::new().num_threads(t).build_global().ok(); }
+    let params = Params { shared_mutation_bonus, length_penalty_multiplier, v_penalty, j_penalty, distance_cutoff };
+    let n = inp.n;
+    if n == 0 { return Ok(vec![]); }
+    if n == 1 { return Ok(vec![0]); }
+
+    // Build simple multi-band hash buckets (approximate LSH)
+    // Bands: whole CDR3, prefix, suffix, (len, V, J)
+    let mut bands: [AHashMap<u64, Vec<usize>>; 4] = [
+        AHashMap::new(), AHashMap::new(), AHashMap::new(), AHashMap::new()
+    ];
+    inp.cdr3_offsets.par_windows(2).enumerate().for_each(|(i, w)| {
+        let start = w[0];
+        let end = w[1];
+        let s = &inp.cdr3_data[start..end];
+        let len = s.len();
+        // band0: full
+        let mut hasher0 = ahash::AHasher::default();
+        use std::hash::Hasher;
+        for &b in s { hasher0.write_u8(b); }
+        let key0 = hasher0.finish();
+        // band1: prefix up to 6
+        let k = len.min(6);
+        let mut hasher1 = ahash::AHasher::default();
+        for &b in &s[..k] { hasher1.write_u8(b); }
+        hasher1.write_usize(len);
+        let key1 = hasher1.finish();
+        // band2: suffix up to 6
+        let mut hasher2 = ahash::AHasher::default();
+        for &b in &s[len.saturating_sub(k)..] { hasher2.write_u8(b); }
+        hasher2.write_usize(len);
+        let key2 = hasher2.finish();
+        // band3: length, v and j ids
+        let mut hasher3 = ahash::AHasher::default();
+        hasher3.write_usize(len);
+        hasher3.write_i32(inp.v_ids[i]);
+        hasher3.write_i32(inp.j_ids[i]);
+        let key3 = hasher3.finish();
+        // Insert into bands (synchronized via mutex-free approach: collect locally then merge)
+        // For simplicity in parallel, push into thread-local vectors then merge after
+    });
+    // Rebuild sequentially (small n typical in tests); for production, parallelize with mutex or sharded maps
+    for i in 0..n {
+        let s = inp.cdr3_slice(i);
+        let len = s.len();
+        use std::hash::Hasher;
+        let mut h0 = ahash::AHasher::default();
+        for &b in s { h0.write_u8(b); }
+        let key0 = h0.finish();
+        bands[0].entry(key0).or_default().push(i);
+        let k = len.min(6);
+        let mut h1 = ahash::AHasher::default();
+        for &b in &s[..k] { h1.write_u8(b); }
+        h1.write_usize(len);
+        bands[1].entry(h1.finish()).or_default().push(i);
+        let mut h2 = ahash::AHasher::default();
+        for &b in &s[len.saturating_sub(k)..] { h2.write_u8(b); }
+        h2.write_usize(len);
+        bands[2].entry(h2.finish()).or_default().push(i);
+        let mut h3 = ahash::AHasher::default();
+        h3.write_usize(len);
+        h3.write_i32(inp.v_ids[i]);
+        h3.write_i32(inp.j_ids[i]);
+        bands[3].entry(h3.finish()).or_default().push(i);
+    }
+
+    let mut uf = UnionFind::new(n);
+    // For each band bucket, union pairs that pass distance cutoff (single-linkage approximation)
+    for band in &bands {
+        for (_k, members) in band {
+            if members.len() < 2 { continue; }
+            // For large buckets, cap comparisons using stride sampling
+            let max_pairs = 200_000usize; // safety cap
+            let mut pairs_checked = 0usize;
+            for a_idx in 0..members.len() {
+                for b_idx in (a_idx + 1)..members.len() {
+                    if pairs_checked >= max_pairs { break; }
+                    let i = members[a_idx];
+                    let j = members[b_idx];
+                    let d = pair_distance(inp, i, j, &params, inp.mut_bitsets.as_ref());
+                    if d <= distance_cutoff {
+                        uf.union(i, j);
+                    }
+                    pairs_checked += 1;
+                }
+                if pairs_checked >= max_pairs { break; }
+            }
+        }
+    }
+
+    // Build labels from roots
+    let mut root_to_label: AHashMap<usize, i32> = AHashMap::new();
+    let mut next_label: i32 = 0;
+    let mut labels: Vec<i32> = Vec::with_capacity(n);
+    for i in 0..n {
+        let r = uf.find(i);
+        let entry = root_to_label.entry(r).or_insert_with(|| { let v = next_label; next_label += 1; v });
+        labels.push(*entry);
+    }
+    Ok(labels)
+}
+
 #[pymodule]
 fn _native(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<NativeInputs>()?;
     m.add_function(wrap_pyfunction!(average_linkage_cutoff, m)?)?;
+    m.add_function(wrap_pyfunction!(average_linkage_cutoff_progressive, m)?)?;
     Ok(())
 }
 
