@@ -14,14 +14,13 @@ Requires Python 3.8+.
 ### pip
 
 ```bash
-python -m pip install -U pip setuptools wheel
-python -m pip install clonify-antibody
+pip install clonify-antibody
 ```
 
 If you want to avoid building from source, you can force a prebuilt wheel only:
 
 ```bash
-python -m pip install --only-binary=:all: clonify-antibody
+pip install --only-binary=:all: clonify-antibody
 ```
 
 ### uv
