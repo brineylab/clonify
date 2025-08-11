@@ -254,7 +254,7 @@ def clonify_native(
     mnemonic_names: bool = True,
     name_seed: Optional[int] = None,
     n_threads: Optional[int] = None,
-    progressive: bool = False,
+    progressive: bool = True,
     verbose: bool = True,
 ) -> Tuple[Dict[str, str], pl.DataFrame]:
     # Resolve dynamic defaults for keys based on schema
@@ -460,7 +460,7 @@ def clonify(
     mnemonic_names: bool = True,
     name_seed: Optional[int] = None,
     n_threads: Optional[int] = None,
-    progressive: bool = False,
+    progressive: bool = True,
     verbose: bool = True,
 ) -> Tuple[Dict[str, str], pl.DataFrame]:
     """Public API: dispatch to native (Rust) or reference Python backend.

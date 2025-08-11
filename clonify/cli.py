@@ -195,7 +195,7 @@ def _write_dataframe(_: pl.DataFrame, __: str) -> None:
 )
 @click.option(
     "--progressive/--no-progressive",
-    default=False,
+    default=True,
     help="Use progressive approximate clustering (LSH-guided) in native backend.",
 )
 @click.option(
