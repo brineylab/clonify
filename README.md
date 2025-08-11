@@ -15,25 +15,25 @@ Requires Python 3.8+.
 
 ```bash
 python -m pip install -U pip setuptools wheel
-python -m pip install clonify
+python -m pip install clonify-antibody
 ```
 
 If you want to avoid building from source, you can force a prebuilt wheel only:
 
 ```bash
-python -m pip install --only-binary=:all: clonify
+python -m pip install --only-binary=:all: clonify-antibody
 ```
 
 ### uv
 
 ```bash
 # install into the current environment
-uv pip install clonify
+uv pip install clonify-antibody
 
 # or create/use a uv-managed virtualenv
 uv venv .venv
 source .venv/bin/activate
-uv pip install clonify
+uv pip install clonify-antibody
 ```
 
 ## Compatibility
@@ -78,7 +78,7 @@ clonify \
   --output results/lineages.parquet \
   --assignments-json results/assignments.json \
   --distance-cutoff 0.35 \
-  --shared-mutation-bonus 0.35 \
+  --shared-mutation-bonus 0.4 \
   --length-penalty-multiplier 2.0
 ```
 
@@ -96,7 +96,7 @@ df = pl.read_csv("data/airr.tsv", separator="\t")
 assignments, df_out = clonify(
     df,
     distance_cutoff=0.35,
-    shared_mutation_bonus=0.35,
+    shared_mutation_bonus=0.4,
     length_penalty_multiplier=2.0,
 )
 
