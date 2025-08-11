@@ -121,7 +121,7 @@ jobs:
       - name: Install wheel from artifacts
         run: |
           python -m pip install -U pip
-          python -m pip install --no-index --find-links dist --only-binary clonify clonify
+          python -m pip install --find-links dist --only-binary clonify clonify
       - name: Import and CLI smoke test
         run: |
           python - <<'PY'
