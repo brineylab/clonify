@@ -1,7 +1,18 @@
 import polars as pl
 import pytest
 
-from clonify import clonify
+# Import clonify, but gracefully skip if the native extension isn't built yet
+try:
+    import clonify as clonify_mod
+
+    clonify = clonify_mod.clonify
+except Exception as e:  # pragma: no cover - handled by pytest skip
+    if isinstance(e, RuntimeError) and "native extension not built" in str(e).lower():
+        pytest.skip(
+            "clonify native extension not built. Build with `maturin develop` or `pip install .`.",
+            allow_module_level=True,
+        )
+    raise
 
 
 def _df(rows):

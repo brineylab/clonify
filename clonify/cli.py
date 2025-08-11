@@ -1,12 +1,37 @@
 from __future__ import annotations
 
 import json
+import sys as _sys
+from importlib import import_module as _import_module
 from typing import Optional
 
 import click
 import polars as pl
 
-from .clonify import clonify as clonify_api
+# Import version
+from .version import __version__
+
+# Import the implementation submodule but immediately restore the public
+# callable on the parent package so that ``clonify.clonify`` remains a
+# function even after this module is imported (pytest discovers the CLI test
+# first which would otherwise clobber it).
+#
+# NOTE: we *must* perform the import in this way (rather than the original
+# ``from .clonify import clonify as clonify_api``) to avoid Python's
+# automatic parent attribute assignment that would overwrite
+# ``clonify.clonify`` with the sub-module object.  By holding a reference to
+# the actual function we can then patch the parent package back to the
+# intended public API.
+_clonify_mod = _sys.modules[
+    __package__
+]  # parent package already imported by the time this module loads
+clonify_api = _clonify_mod.clonify  # type: ignore[attr-defined]
+
+# NOTE: We purposefully **do not** import the submodule ``clonify.clonify`` here
+# because doing so would cause the import machinery to assign that module object
+# to ``clonify.clonify`` on the parent package, clobbering the public API
+# callable.  By re-using the existing attribute we guarantee a stable function
+# reference regardless of import order during the test suite.
 
 
 def _write_dataframe(_: pl.DataFrame, __: str) -> None:
@@ -15,6 +40,7 @@ def _write_dataframe(_: pl.DataFrame, __: str) -> None:
 
 
 @click.command(context_settings={"show_default": True})
+@click.version_option(version=__version__, prog_name="clonify")
 @click.option(
     "--input",
     "input_path",

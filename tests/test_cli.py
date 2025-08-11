@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 # Skip all tests if native extension isn't available (mirrors behavior in other tests)
 try:
-    import clonify as _clonify_mod  # noqa: F401
+    from clonify.cli import cli
 except Exception as e:  # pragma: no cover - handled by pytest skip
     if isinstance(e, RuntimeError) and "native extension not built" in str(e).lower():
         pytest.skip(
@@ -15,8 +15,6 @@ except Exception as e:  # pragma: no cover - handled by pytest skip
             allow_module_level=True,
         )
     raise
-
-from clonify.cli import cli  # noqa: E402
 
 
 def _make_df(rows: List[Tuple[str, str, str, str, str]]) -> pl.DataFrame:
@@ -186,3 +184,14 @@ def test_cli_missing_mutations_column_errors(tmp_path: pytest.TempPathFactory) -
     result = runner.invoke(cli, ["--input", str(inp), "--quiet"])  # no mutations column
     assert result.exit_code != 0
     assert "Missing column" in result.output
+
+
+def test_cli_version() -> None:
+    """Test that the --version flag works and displays the correct version."""
+    from clonify.version import __version__
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--version"])
+    assert result.exit_code == 0
+    assert __version__ in result.output
+    assert "clonify" in result.output.lower()
