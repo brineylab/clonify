@@ -1,10 +1,10 @@
-# clonify (native)
+# clonify
 
-High-performance clonotype assignment with a native Rust backend and average-linkage clustering.
+High-performance antibody clonal lineage assignment.
 
 ## Installation
 
-clonify is published on PyPI with prebuilt wheels for common platforms:
+clonify is published on PyPI (as `clonify-antibody`) with prebuilt wheels for common platforms:
 
 - macOS (Apple Silicon arm64 and Intel x86_64)
 - Linux (manylinux x86_64)
