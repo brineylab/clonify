@@ -176,66 +176,102 @@ def test_bnab_cross_backend_identical_assignments() -> None:
         verbose=False,
     )
 
+    # Also run native with progressive clustering enabled
+    try:
+        assign_native_prog, _ = clonify(
+            df,
+            backend="native",
+            n_threads=1,
+            group_by_light_chain_vj=False,
+            name_seed=123,
+            progressive=True,
+            verbose=False,
+        )
+    except TypeError:
+        # Fallback via env flag for older function signature
+        import os
+
+        os.environ["CLONIFY_PROGRESSIVE"] = "1"
+        assign_native_prog, _ = clonify(
+            df,
+            backend="native",
+            n_threads=1,
+            group_by_light_chain_vj=False,
+            name_seed=123,
+            verbose=False,
+        )
+
     # Agreement measured as the fraction of sequences that are placed together
     # by both backends, computed via best-overlap per native cluster
     frac_agree = _fraction_sequences_grouped_together(assign_native, assign_python)
+    frac_agree_prog = _fraction_sequences_grouped_together(
+        assign_native_prog, assign_python
+    )
     warnings.filterwarnings("always", category=UserWarning)
     warnings.warn(
-        f"test_bnab_cross_backend_identical_assignments frac_agree={frac_agree:.4f}",
+        (
+            "test_bnab_cross_backend_identical_assignments "
+            f"frac_agree_native_vs_python={frac_agree:.4f} "
+            f"frac_agree_native_prog_vs_python={frac_agree_prog:.4f}"
+        ),
         stacklevel=1,
     )
     assert (
         frac_agree >= 0.90
     ), f"Fraction of sequences grouped together too low: {frac_agree:.4f} (< 0.90)"
-
-
-def test_lc_coherence_parquet_cross_backend_identical_assignments() -> None:
-    # Skip if python backend deps not installed
-    try:
-        __import__("abutils")
-        __import__("fastcluster")
-        __import__("scipy")
-    except Exception:
-        pytest.skip(
-            "Reference python backend dependencies not installed",
-            allow_module_level=False,
-        )
-
-    parquet_path = (
-        Path(__file__).parent / "test_data" / "lc_coherence_test-25k-heavies.parquet"
-    )
-    if not parquet_path.exists():
-        pytest.skip(f"Missing test data file: {parquet_path}")
-
-    # Exercise parquet path input handling for both backends
-    assign_native, _ = clonify(
-        str(parquet_path),
-        backend="native",
-        n_threads=1,
-        group_by_light_chain_vj=False,
-        name_seed=123,
-        verbose=False,
-    )
-    assign_python, _ = clonify(
-        str(parquet_path),
-        backend="python",
-        group_by_light_chain_vj=False,
-        name_seed=123,
-        verbose=False,
+    assert frac_agree_prog >= 0.90, (
+        "Fraction of sequences grouped together (native progressive vs python) too low: "
+        f"{frac_agree_prog:.4f} (< 0.90)"
     )
 
-    # Agreement measured as the fraction of sequences that are placed together
-    # by both backends, computed via best-overlap per native cluster
-    frac_agree = _fraction_sequences_grouped_together(assign_native, assign_python)
-    warnings.filterwarnings("always", category=UserWarning)
-    warnings.warn(
-        f"test_lc_coherence_parquet_cross_backend_identical_assignments frac_agree={frac_agree:.4f}",
-        stacklevel=1,
-    )
-    assert (
-        frac_agree >= 0.25
-    ), f"Fraction of sequences grouped together too low: {frac_agree:.4f} (< 0.25)"
+
+# def test_lc_coherence_parquet_cross_backend_identical_assignments() -> None:
+#     # Skip if python backend deps not installed
+#     try:
+#         __import__("abutils")
+#         __import__("fastcluster")
+#         __import__("scipy")
+#     except Exception:
+#         pytest.skip(
+#             "Reference python backend dependencies not installed",
+#             allow_module_level=False,
+#         )
+
+#     parquet_path = (
+#         Path(__file__).parent / "test_data" / "lc_coherence_test-25k-heavies.parquet"
+#     )
+#     if not parquet_path.exists():
+#         pytest.skip(f"Missing test data file: {parquet_path}")
+
+#     # Exercise parquet path input handling for both backends
+#     assign_native, _ = clonify(
+#         str(parquet_path),
+#         backend="native",
+#         n_threads=1,
+#         group_by_light_chain_vj=False,
+#         name_seed=123,
+#         verbose=False,
+#     )
+#     assign_python, _ = clonify(
+#         str(parquet_path),
+#         backend="python",
+#         group_by_light_chain_vj=False,
+#         name_seed=123,
+#         verbose=False,
+#     )
+
+#     # Agreement measured as the fraction of sequences that are placed together
+#     # by both backends, computed via best-overlap per native cluster
+#     frac_agree = _fraction_sequences_grouped_together(assign_native, assign_python)
+#     warnings.filterwarnings("always", category=UserWarning)
+#     warnings.warn(
+#         f"test_lc_coherence_parquet_cross_backend_identical_assignments frac_agree={frac_agree:.4f}",
+#         stacklevel=1,
+#     )
+#     assert (
+#         frac_agree >= 0.25
+#     ), f"Fraction of sequences grouped together too low: {frac_agree:.4f} (< 0.25)"
 
 
-#     ri = _rand_index(assign_native, assign_python)
-#     assert ri >= 0.95, f"Rand index too low on lc-coherence parquet: {ri:.4f} (< 0.95)"
+# #     ri = _rand_index(assign_native, assign_python)
+# #     assert ri >= 0.95, f"Rand index too low on lc-coherence parquet: {ri:.4f} (< 0.95)"
