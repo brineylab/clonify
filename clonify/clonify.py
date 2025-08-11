@@ -234,7 +234,7 @@ def clonify_native(
     df: pl.DataFrame,
     *,
     distance_cutoff: float = 0.35,
-    shared_mutation_bonus: float = 0.35,
+    shared_mutation_bonus: float = 0.4,
     length_penalty_multiplier: float | int = 2.0,
     group_by_v: bool = True,
     group_by_j: bool = True,

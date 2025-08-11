@@ -22,8 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Build once per platform since the native library is ABI-stable (abi3)
         os: [ubuntu-latest, macos-13, macos-14]
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,17 +39,29 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           rust-toolchain: stable
-          maturin-version: latest
-          manylinux: auto
-          args: --release --out dist
+          # Produce a manylinux_2_28-compatible wheel so users without a compiler can install
+          manylinux: "manylinux_2_28"
+          # Build an abi3 wheel (stable for all Python ≥3.10)
+          args: --release --out dist --compatibility abi3
 
-      - name: Build wheel (macOS universal2)
-        if: startsWith(matrix.os, 'macos')
+      # Build dedicated arm64 wheel on Apple-silicon runner
+      - name: Build wheel (macOS arm64)
+        if: matrix.os == 'macos-14'
         uses: PyO3/maturin-action@v1
         with:
           rust-toolchain: stable
           maturin-version: latest
-          args: --release --out dist --universal2
+          # Native build already targets arm64; no universal2 slice
+          args: --release --out dist --compatibility abi3
+
+      # Build universal2 wheel on Intel runner (contains both x86_64 + arm64 slices)
+      - name: Build wheel (macOS universal2)
+        if: matrix.os == 'macos-13'
+        uses: PyO3/maturin-action@v1
+        with:
+          rust-toolchain: stable
+          maturin-version: latest
+          args: --release --out dist --universal2 --compatibility abi3
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4
@@ -91,8 +104,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Test wheels on all supported Python versions
         os: [ubuntu-latest, macos-13, macos-14]
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5

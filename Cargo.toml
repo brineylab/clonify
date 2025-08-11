@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 nn_chain = []
 
 [dependencies]
-pyo3 = { version = "0.21", features = ["extension-module", "abi3-py38"] }
+pyo3 = { version = "0.21", features = ["extension-module", "abi3-py310"] }
 rayon = "1.10"
 bitvec = "1.0"
 ahash = "0.8"

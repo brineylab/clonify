@@ -64,7 +64,7 @@ def _write_dataframe(_: pl.DataFrame, __: str) -> None:
 @click.option(
     "--shared-mutation-bonus",
     type=float,
-    default=0.35,
+    default=0.4,
     help="Bonus applied for shared mutations.",
 )
 @click.option(
