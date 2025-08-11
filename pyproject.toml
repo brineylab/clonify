@@ -3,7 +3,7 @@ requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "clonify"
+name = "clonify-antibody"
 dynamic = ["version"]
 description = "High-performance clonify implementation with native average-linkage clustering"
 authors = [
