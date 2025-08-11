@@ -61,7 +61,8 @@ jobs:
         with:
           rust-toolchain: stable
           maturin-version: latest
-          args: --release --out dist --universal2
+          target: universal2-apple-darwin
+          args: --release --out dist
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4
