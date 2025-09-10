@@ -1,0 +1,7 @@
+include LICENSE
+include README.md
+recursive-include include *.hpp
+recursive-include bindings *.cpp
+recursive-include clonify *.cpp *.py
+exclude tests/*
+

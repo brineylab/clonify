@@ -1,44 +1,35 @@
 [build-system]
-requires = ["maturin>=1.5,<2.0"]
-build-backend = "maturin"
+requires = [
+  "setuptools>=64",
+  "wheel",
+  "pybind11>=2.11",
+]
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "clonify-antibody"
-dynamic = ["version"]
-description = "High-performance clonify implementation with native average-linkage clustering"
-authors = [
-  { name = "Bryan Briney" }
-]
+name = "clonify"
+version = "0.0.0"
+description = "Robust average-linkage antibody clustering"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Bryan Briney" }]
 dependencies = [
-  "polars>=0.20",
-  "mnemonic>=0.20",
-  "natsort>=8.0",
+  "pandas>=1.5; python_version < '3.12'",
+  "pandas>=2.0; python_version >= '3.12'",
+  "polars>=0.19",
   "click>=8.1",
 ]
-classifiers = [
-  "Programming Language :: Python",
-  "Programming Language :: Rust",
-  "Operating System :: MacOS",
-  "Operating System :: POSIX :: Linux",
-]
+
+[project.urls]
+Homepage = "https://github.com/bryanbriney/clonify"
+
+[tool.setuptools]
+packages = ["clonify"]
+
+[tool.setuptools.package-data]
+clonify = []
 
 [project.scripts]
-clonify = "clonify.cli:main"
-
-[project.optional-dependencies]
-dev = ["maturin>=1.5,<2.0", "pytest>=7.0", "polars>=0.20", "numpy>=1.23", "mnemonic>=0.20", "natsort>=8.0"]
-
-[tool.maturin]
-module-name = "clonify._native"
-bindings = "pyo3"
-features = ["pyo3/extension-module"]
-python-packages = ["clonify"]
-strip = true
-
-# Configure version source
-[tool.maturin.metadata]
-version = {path = "clonify/version.py"}
-
+clonify = "clonify.cli:clonify"
 
