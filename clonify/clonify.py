@@ -60,6 +60,8 @@ def run(
     len_penalty: int = 2,
     epsilon: Optional[float] = None,
     canonical_samples: Optional[int] = None,
+    group_by_v: bool = True,
+    group_by_j: bool = True,
 ) -> Any:
     """Cluster antibody-like records into clonal lineages and add a ``lineage`` column.
 
@@ -114,6 +116,12 @@ def run(
         canonical_samples (Optional[int]):
             Optional number of canonical samples considered within clusters. If
             ``None``, the backend default is used. Default: ``None``.
+        group_by_v (bool):
+            If ``True``, pre-group records by V gene prior to clustering.
+            Default: ``True``.
+        group_by_j (bool):
+            If ``True``, pre-group records by J gene prior to clustering.
+            Default: ``True``.
 
     Returns:
         polars.DataFrame | pandas.DataFrame: The input table augmented with a
@@ -217,21 +225,63 @@ def run(
     if canonical_samples is not None:
         options.canonical_samples = int(canonical_samples)
 
-    # Convert rows to abcluster.Record
-    records: List[abcluster.Record] = []
-    for junc, v, j, muts in df.select(cols).iter_rows():
-        rec = abcluster.Record()
-        rec.junc = "" if junc is None else str(junc)
-        rec.v_gene = "" if v is None else str(v)
-        rec.j_gene = "" if j is None else str(j)
-        rec.mutations = _coerce_mutations(muts)
-        records.append(rec)
+    # # Pre-group by V and/or J gene to reduce pairwise comparisons
+    # selected = df.select(cols)
+    # junc_vals = selected.get_column(junc_col).to_list()
+    # v_vals = selected.get_column(v_gene_col).to_list()
+    # j_vals = selected.get_column(j_gene_col).to_list()
+    # mut_vals = selected.get_column(mutations_col).to_list()
 
-    # Cluster
-    labels = abcluster.cluster(records, options)
+    # Determine grouping keys
+    key_cols = []
+    if group_by_v:
+        key_cols.append(v_gene_col)
+    if group_by_j:
+        key_cols.append(j_gene_col)
 
-    # Attach lineage column
-    df = df.with_columns(pl.Series("lineage", labels))
+    # Compute groups as lists of row indices using Polars (fast, in Rust)
+    # if key_cols:
+    #     # Build a stable row index, then aggregate indices per group
+    #     df_idx = df.with_row_count("_row_idx")
+    #     groups_df = (
+    #         df_idx.select([*key_cols, "_row_idx"])
+    #         .group_by(key_cols, maintain_order=True)
+    #         .agg(pl.col("_row_idx").alias("groups"))
+    #     )
+    #     index_groups: List[List[int]] = groups_df.get_column("groups").to_list()  # type: ignore[assignment]
+    # else:
+    #     index_groups = [list(range(len(df)))]
+    # groups = df.group_by(key_cols)
+
+    # labels: List[str] = [""] * len(df)
+
+    assigned_dfs = []
+
+    if key_cols:
+        groups = df.group_by(key_cols)
+    else:
+        groups = [(None, df)]
+
+    for _, group_df in groups:
+        # Build abcluster.Record list for this V/J group
+        selected_df = group_df.select(cols)
+        group_records: List[abcluster.Record] = []
+        for r in selected_df.iter_rows(named=True):
+            rec = abcluster.Record()
+            rec.junc = "" if r[junc_col] is None else str(r[junc_col])
+            rec.v_gene = "" if r[v_gene_col] is None else str(r[v_gene_col])
+            rec.j_gene = "" if r[j_gene_col] is None else str(r[j_gene_col])
+            rec.mutations = _coerce_mutations(r[mutations_col])
+            group_records.append(rec)
+
+        local_labels = abcluster.cluster(group_records, options)
+        group_df = group_df.with_columns(pl.Series("lineage", local_labels))
+        assigned_dfs.append(group_df)
+
+    if len(assigned_dfs) > 1:
+        df = pl.concat(assigned_dfs)
+    else:
+        df = assigned_dfs[0]
 
     if input_is_path:
         # Determine output path and format

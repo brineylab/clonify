@@ -257,56 +257,56 @@ def _build_four_cluster_rows() -> list[dict[str, Any]]:
     cluster_a = [
         {
             "cdr3": "CARDRSTYYGMDVW",
-            "v_gene": "IGHV3-23*01",
-            "j_gene": "IGHJ4*02",
+            "v_gene": "IGHV3-23",
+            "j_gene": "IGHJ4",
             "v_mutations": "A23G|C45T",
         },
         {
             "cdr3": "CARDRSTYYGMDVW",
-            "v_gene": "IGHV3-23*01",
-            "j_gene": "IGHJ4*02",
+            "v_gene": "IGHV3-23",
+            "j_gene": "IGHJ4",
             "v_mutations": "A23G|C45T",
         },
     ]
     cluster_b = [
         {
-            "cdr3": "CARGGGYAMDYW",
-            "v_gene": "IGHV3-23*01",
-            "j_gene": "IGHJ4*02",
+            "cdr3": "CARGGGYYAMDYW",
+            "v_gene": "IGHV3-23",
+            "j_gene": "IGHJ4",
             "v_mutations": "",
         },
         {
-            "cdr3": "CARGGGYAMDYW",
-            "v_gene": "IGHV3-23*01",
-            "j_gene": "IGHJ4*02",
+            "cdr3": "CARGGGYYAMDYW",
+            "v_gene": "IGHV3-23",
+            "j_gene": "IGHJ4",
             "v_mutations": "",
         },
     ]
     cluster_c = [
         {
             "cdr3": "CARVSTGGYWFDYW",
-            "v_gene": "IGHV1-69*01",
-            "j_gene": "IGHJ6*03",
+            "v_gene": "IGHV1-69",
+            "j_gene": "IGHJ6",
             "v_mutations": None,
         },
         {
             "cdr3": "CARVSTGGYWFDYW",
-            "v_gene": "IGHV1-69*01",
-            "j_gene": "IGHJ6*03",
+            "v_gene": "IGHV1-69",
+            "j_gene": "IGHJ6",
             "v_mutations": None,
         },
     ]
     cluster_d = [
         {
             "cdr3": "CARTGNYDFWS",
-            "v_gene": "IGHV4-39*01",
-            "j_gene": "IGHJ3*02",
+            "v_gene": "IGHV4-39",
+            "j_gene": "IGHJ3",
             "v_mutations": "T10C",
         },
         {
             "cdr3": "CARTGNYDFWS",
-            "v_gene": "IGHV4-39*01",
-            "j_gene": "IGHJ3*02",
+            "v_gene": "IGHV4-39",
+            "j_gene": "IGHJ3",
             "v_mutations": "T10C",
         },
     ]
@@ -330,7 +330,7 @@ def _assert_partition(labels: list[str], group_sizes: list[int]) -> None:
 def test_accuracy_polars_four_clusters() -> None:
     rows = _build_four_cluster_rows()
     df = as_polars_df(rows)
-    out = run(df)
+    out = run(df, group_by_v=False, group_by_j=False)
     assert isinstance(out, pl.DataFrame)
     labs = out.get_column("lineage").to_list()
     _assert_partition(labs, [2, 2, 2, 2])
@@ -339,7 +339,7 @@ def test_accuracy_polars_four_clusters() -> None:
 def test_accuracy_pandas_four_clusters() -> None:
     rows = _build_four_cluster_rows()
     df = as_pandas_df(rows)
-    out = run(df)
+    out = run(df, group_by_v=False, group_by_j=False)
     assert isinstance(out, pd.DataFrame)
     labs = out["lineage"].tolist()
     _assert_partition(labs, [2, 2, 2, 2])
