@@ -1,0 +1,16 @@
+[package]
+name = "clonify-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core antibody clonotype clustering library"
+
+[dependencies]
+rayon = { workspace = true }
+hashbrown = { workspace = true }
+rustc-hash = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

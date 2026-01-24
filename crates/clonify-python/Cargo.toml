@@ -1,0 +1,16 @@
+[package]
+name = "clonify-python"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Python bindings for clonify antibody clustering"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+clonify-core = { path = "../clonify-core" }
+pyo3 = { workspace = true }
+rayon = { workspace = true }

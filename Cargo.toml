@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Bryan Briney <briney@scripps.edu>"]
+license = "MIT"
+repository = "https://github.com/brineylab/clonify"
+description = "High-performance antibody clonotype clustering"
+
+[workspace.dependencies]
+# PyO3 for Python bindings
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+# Performance
+rayon = "1.10"
+
+# Data structures
+hashbrown = "0.15"
+rustc-hash = "2.1"
+
+# Error handling
+thiserror = "2.0"
+
+# Testing
+proptest = "1.5"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

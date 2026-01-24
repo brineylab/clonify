@@ -1,35 +1,76 @@
 [build-system]
-requires = [
-  "setuptools>=64",
-  "wheel",
-  "pybind11>=2.11",
-]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "clonify"
-version = "0.0.0"
-description = "Robust average-linkage antibody clustering"
+version = "0.1.0"
+description = "High-performance antibody clonotype clustering"
+authors = [{ name = "Bryan Briney", email = "briney@scripps.edu" }]
 readme = "README.md"
-requires-python = ">=3.9"
 license = { file = "LICENSE" }
-authors = [{ name = "Bryan Briney" }]
+requires-python = ">=3.10"
+keywords = ["antibody", "immunology", "clustering", "bioinformatics", "clonotype"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 dependencies = [
-  "pandas>=1.5; python_version < '3.12'",
-  "pandas>=2.0; python_version >= '3.12'",
-  "polars>=0.19",
-  "click>=8.1",
+    "polars>=1.0",
+    "typer>=0.12",
+    "natsort>=8.0",
 ]
 
-[project.urls]
-Homepage = "https://github.com/bryanbriney/clonify"
-
-[tool.setuptools]
-packages = ["clonify"]
-
-[tool.setuptools.package-data]
-clonify = []
+[project.optional-dependencies]
+pandas = ["pandas>=2.0", "pyarrow>=15.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "hypothesis>=6.100",
+    "pandas>=2.0",
+    "pyarrow>=15.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
 
 [project.scripts]
-clonify = "clonify.cli:clonify"
+clonify = "clonify.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/brineylab/clonify"
+Documentation = "https://github.com/brineylab/clonify#readme"
+Repository = "https://github.com/brineylab/clonify"
+Issues = "https://github.com/brineylab/clonify/issues"
+
+[tool.maturin]
+python-source = "python"
+module-name = "clonify._native"
+manifest-path = "crates/clonify-python/Cargo.toml"
+features = ["pyo3/extension-module"]
+strip = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
