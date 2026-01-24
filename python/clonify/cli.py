@@ -1,7 +1,8 @@
 """Command-line interface for clonify."""
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -18,7 +19,7 @@ def run(
     input_path: Path = typer.Option(
         ..., "--input", "-i", help="Input file (TSV, CSV, or Parquet)"
     ),
-    output_path: Optional[Path] = typer.Option(
+    output_path: Path | None = typer.Option(
         None, "--output", "-o", help="Output file path"
     ),
     distance_cutoff: float = typer.Option(
@@ -30,19 +31,19 @@ def run(
     length_penalty: float = typer.Option(
         2.0, "--length-penalty", "-l", help="Penalty per unit length difference"
     ),
-    id_key: Optional[str] = typer.Option(
+    id_key: str | None = typer.Option(
         None, "--id-key", help="Column name for sequence IDs"
     ),
-    vgene_key: Optional[str] = typer.Option(
+    vgene_key: str | None = typer.Option(
         None, "--vgene-key", help="Column name for V gene"
     ),
-    jgene_key: Optional[str] = typer.Option(
+    jgene_key: str | None = typer.Option(
         None, "--jgene-key", help="Column name for J gene"
     ),
-    cdr3_key: Optional[str] = typer.Option(
+    cdr3_key: str | None = typer.Option(
         None, "--cdr3-key", help="Column name for CDR3/junction"
     ),
-    mutations_key: Optional[str] = typer.Option(
+    mutations_key: str | None = typer.Option(
         None, "--mutations-key", help="Column name for mutations"
     ),
     lineage_column: str = typer.Option(

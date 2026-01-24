@@ -1,7 +1,5 @@
 """Type stubs for the native Rust module."""
 
-from typing import Optional
-
 class ClusterParams:
     """Parameters for clustering algorithm."""
 
@@ -11,7 +9,7 @@ class ClusterParams:
         mut_value: float = 0.35,
         len_penalty: int = 2,
         epsilon: float = 0.001,
-        min_center_size: Optional[int] = None,
+        min_center_size: int | None = None,
     ) -> None: ...
     @property
     def cutoff(self) -> float: ...
@@ -28,7 +26,7 @@ def cluster(
     j_genes: list[str],
     cdr3s: list[str],
     mutations: list[list[int]],
-    params: Optional[ClusterParams] = None,
+    params: ClusterParams | None = None,
 ) -> list[tuple[str, int]]:
     """Cluster antibody sequences into clonal lineages.
 

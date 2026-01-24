@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING
 
 import polars as pl
 
@@ -23,7 +23,7 @@ COLUMN_ALIASES = {
 }
 
 
-def _find_column(df: pl.DataFrame, aliases: list[str], custom: Optional[str] = None) -> str:
+def _find_column(df: pl.DataFrame, aliases: list[str], custom: str | None = None) -> str:
     """Find a column by name or alias."""
     if custom is not None:
         if custom in df.columns:
@@ -38,8 +38,8 @@ def _find_column(df: pl.DataFrame, aliases: list[str], custom: Optional[str] = N
 
 
 def _load_dataframe(
-    data: Union[pl.DataFrame, "pd.DataFrame", str, Path],
-    input_format: Optional[str] = None,
+    data: pl.DataFrame | "pd.DataFrame" | str | Path,
+    input_format: str | None = None,
 ) -> pl.DataFrame:
     """Load data into a polars DataFrame."""
     # Already a polars DataFrame
@@ -85,8 +85,8 @@ def _load_dataframe(
 
 def _save_dataframe(
     df: pl.DataFrame,
-    path: Union[str, Path],
-    output_format: Optional[str] = None,
+    path: str | Path,
+    output_format: str | None = None,
 ) -> None:
     """Save a DataFrame to file."""
     path = Path(path)
@@ -115,22 +115,22 @@ def _save_dataframe(
 
 
 def clonify(
-    data: Union[pl.DataFrame, "pd.DataFrame", str, Path],
+    data: pl.DataFrame | "pd.DataFrame" | str | Path,
     *,
     # I/O options
-    input_format: Optional[str] = None,
-    output_path: Optional[Union[str, Path]] = None,
-    output_format: Optional[str] = None,
+    input_format: str | None = None,
+    output_path: str | Path | None = None,
+    output_format: str | None = None,
     # Clustering parameters
     distance_cutoff: float = 0.35,
     shared_mutation_bonus: float = 0.35,
     length_penalty_multiplier: float = 2.0,
     # Column keys
-    id_key: Optional[str] = None,
-    vgene_key: Optional[str] = None,
-    jgene_key: Optional[str] = None,
-    cdr3_key: Optional[str] = None,
-    mutations_key: Optional[str] = None,
+    id_key: str | None = None,
+    vgene_key: str | None = None,
+    jgene_key: str | None = None,
+    cdr3_key: str | None = None,
+    mutations_key: str | None = None,
     mutation_delimiter: str = "|",
     # Output options
     lineage_column: str = "lineage",
