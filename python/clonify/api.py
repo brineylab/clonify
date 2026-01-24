@@ -4,14 +4,11 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+import pandas as pd
 import polars as pl
 
 from clonify._native import ClusterParams, cluster, parse_mutations
-
-if TYPE_CHECKING:
-    import pandas as pd
 
 # Standard column names to search for
 COLUMN_ALIASES = {
@@ -38,7 +35,7 @@ def _find_column(df: pl.DataFrame, aliases: list[str], custom: str | None = None
 
 
 def _load_dataframe(
-    data: pl.DataFrame | "pd.DataFrame" | str | Path,
+    data: pl.DataFrame | pd.DataFrame | str | Path,
     input_format: str | None = None,
 ) -> pl.DataFrame:
     """Load data into a polars DataFrame."""
@@ -47,13 +44,8 @@ def _load_dataframe(
         return data
 
     # Pandas DataFrame - convert to polars
-    try:
-        import pandas as pd
-
-        if isinstance(data, pd.DataFrame):
-            return pl.from_pandas(data)
-    except ImportError:
-        pass
+    if isinstance(data, pd.DataFrame):
+        return pl.from_pandas(data)
 
     # File path
     path = Path(data)
@@ -115,7 +107,7 @@ def _save_dataframe(
 
 
 def clonify(
-    data: pl.DataFrame | "pd.DataFrame" | str | Path,
+    data: pl.DataFrame | pd.DataFrame | str | Path,
     *,
     # I/O options
     input_format: str | None = None,
