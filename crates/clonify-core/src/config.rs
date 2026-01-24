@@ -1,5 +1,21 @@
 //! Clustering configuration parameters.
 
+/// Partitioning strategy for clustering.
+///
+/// Controls how sequences are grouped into partitions for parallel processing.
+/// Finer partitioning (VjGene) reduces partition sizes and speeds up pairwise
+/// calculations, while coarser partitioning (VFamily) uses fewer partitions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PartitionLevel {
+    /// Partition by V gene family (IGHV1-7 + overflow) - 8 partitions max
+    VFamily,
+    /// Partition by full V gene (~50-100 partitions)
+    VGene,
+    /// Partition by V+J gene combination (~300-600 partitions) - DEFAULT
+    #[default]
+    VjGene,
+}
+
 /// Default distance cutoff for flat clustering (0.35 = 35% dissimilarity)
 pub const DEFAULT_CUTOFF: f64 = 0.35;
 
@@ -47,6 +63,9 @@ pub struct ClusterParams {
 
     /// Number of threads for parallel processing (None = auto)
     pub n_threads: Option<usize>,
+
+    /// Partitioning strategy (default: VjGene)
+    pub partition_level: PartitionLevel,
 }
 
 impl Default for ClusterParams {
@@ -58,6 +77,7 @@ impl Default for ClusterParams {
             epsilon: DEFAULT_EPSILON,
             min_center_size: None,
             n_threads: None,
+            partition_level: PartitionLevel::default(),
         }
     }
 }
@@ -89,6 +109,12 @@ impl ClusterParams {
     /// Set the minimum center size.
     pub fn with_min_center_size(mut self, size: usize) -> Self {
         self.min_center_size = Some(size);
+        self
+    }
+
+    /// Set the partition level.
+    pub fn with_partition_level(mut self, level: PartitionLevel) -> Self {
+        self.partition_level = level;
         self
     }
 

@@ -81,22 +81,48 @@ pub fn j_compare(e1: &Essence, e2: &Essence) -> i32 {
     }
 }
 
+/// Compare light chain V genes, returning penalty for mismatch.
+///
+/// Returns 8 if genes differ, 0 if same or if either is None (unpaired).
+pub fn light_v_compare(e1: &Essence, e2: &Essence) -> i32 {
+    match (e1.key.light_v_gene, e2.key.light_v_gene) {
+        (Some(v1), Some(v2)) if v1 != v2 => 8,
+        _ => 0,
+    }
+}
+
+/// Compare light chain J genes, returning penalty for mismatch.
+///
+/// Returns 8 if genes differ, 0 if same or if either is None (unpaired).
+pub fn light_j_compare(e1: &Essence, e2: &Essence) -> i32 {
+    match (e1.key.light_j_gene, e2.key.light_j_gene) {
+        (Some(j1), Some(j2)) if j1 != j2 => 8,
+        _ => 0,
+    }
+}
+
 /// Compute fast dissimilarity using canonical mutation lists.
 ///
 /// This is used for megacluster center matching where speed is critical.
 ///
 /// Formula:
 /// ```text
-/// dissimilarity = (LD + v_penalty + j_penalty - mut_bonus + len_penalty) / edit_length
+/// dissimilarity = (LD + v_penalty + j_penalty + light_v_penalty + light_j_penalty - mut_bonus + len_penalty) / edit_length
 /// ```
 pub fn fast_dissimilarity(e1: &Essence, e2: &Essence, ld: usize, params: &ClusterParams) -> f64 {
     let v_penalty = v_compare(e1, e2);
     let j_penalty = j_compare(e1, e2);
+    let light_v_penalty = light_v_compare(e1, e2);
+    let light_j_penalty = light_j_compare(e1, e2);
 
     let mut_bonus =
         params.mut_value * num_shared_mutations(&e1.canonical_mutlist, &e2.canonical_mutlist) as f64;
 
-    let basic = ld as f64 + v_penalty as f64 + j_penalty as f64;
+    let basic = ld as f64
+        + v_penalty as f64
+        + j_penalty as f64
+        + light_v_penalty as f64
+        + light_j_penalty as f64;
     let with_bonus = (basic - mut_bonus).max(params.epsilon);
 
     let len_penalty = (e1.key.junction.len() as i32 - e2.key.junction.len() as i32).unsigned_abs()
@@ -137,8 +163,10 @@ fn mut_bonus(e1: &Essence, e2: &Essence, ceiling: f64, params: &ClusterParams) -
 pub fn full_dissimilarity(e1: &Essence, e2: &Essence, ld: usize, params: &ClusterParams) -> f64 {
     let v_penalty = v_compare(e1, e2);
     let j_penalty = j_compare(e1, e2);
+    let light_v_penalty = light_v_compare(e1, e2);
+    let light_j_penalty = light_j_compare(e1, e2);
 
-    let basic = ld as i32 + v_penalty + j_penalty;
+    let basic = ld as i32 + v_penalty + j_penalty + light_v_penalty + light_j_penalty;
 
     // Ceiling prevents over-rewarding high mutation counts
     let ceiling = (basic as f64) / params.mut_value - params.epsilon / params.mut_value;
@@ -264,6 +292,67 @@ mod tests {
         let dist = fast_dissimilarity(&e1, &e2, 0, &params);
         // Should be high due to V and J gene penalties (8 + 8 = 16)
         // Dissimilarity = (0 + 8 + 8) / 6 = 2.67
+        assert!(dist > 2.0);
+    }
+
+    #[test]
+    fn test_light_chain_compare() {
+        // Unpaired sequences - no light chain penalty
+        let key1 = EssenceKey::new("CARFDY".to_string(), 1, 2);
+        let key2 = EssenceKey::new("CARFDY".to_string(), 1, 2);
+        let e1 = Essence::new(key1);
+        let e2 = Essence::new(key2);
+
+        assert_eq!(light_v_compare(&e1, &e2), 0);
+        assert_eq!(light_j_compare(&e1, &e2), 0);
+
+        // Paired sequences - same light chain
+        let key3 = EssenceKey::new_paired("CARFDY".to_string(), 1, 2, 3, 4);
+        let key4 = EssenceKey::new_paired("CARFDY".to_string(), 1, 2, 3, 4);
+        let e3 = Essence::new(key3);
+        let e4 = Essence::new(key4);
+
+        assert_eq!(light_v_compare(&e3, &e4), 0);
+        assert_eq!(light_j_compare(&e3, &e4), 0);
+
+        // Paired sequences - different light V gene
+        let key5 = EssenceKey::new_paired("CARFDY".to_string(), 1, 2, 5, 4);
+        let e5 = Essence::new(key5);
+
+        assert_eq!(light_v_compare(&e3, &e5), 8);
+        assert_eq!(light_j_compare(&e3, &e5), 0);
+
+        // Paired sequences - different light J gene
+        let key6 = EssenceKey::new_paired("CARFDY".to_string(), 1, 2, 3, 6);
+        let e6 = Essence::new(key6);
+
+        assert_eq!(light_v_compare(&e3, &e6), 0);
+        assert_eq!(light_j_compare(&e3, &e6), 8);
+
+        // Mixed paired/unpaired - no penalty
+        assert_eq!(light_v_compare(&e1, &e3), 0);
+        assert_eq!(light_j_compare(&e1, &e3), 0);
+    }
+
+    #[test]
+    fn test_fast_dissimilarity_paired_different_light() {
+        let params = ClusterParams::default();
+
+        // Same heavy chain, different light chain
+        let key1 = EssenceKey::new_paired("CARFDY".to_string(), 1, 2, 3, 4);
+        let key2 = EssenceKey::new_paired("CARFDY".to_string(), 1, 2, 5, 6); // Different light V and J
+
+        let mut e1 = Essence::new(key1);
+        let mut e2 = Essence::new(key2);
+
+        e1.push_mutlist(vec![]);
+        e2.push_mutlist(vec![]);
+        e1.finalize(1);
+        e2.finalize(1);
+
+        let dist = fast_dissimilarity(&e1, &e2, 0, &params);
+        // Should have light chain penalties (8 + 8 = 16)
+        // Dissimilarity = (0 + 0 + 0 + 8 + 8) / 6 = 2.67
         assert!(dist > 2.0);
     }
 }

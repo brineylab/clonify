@@ -1,11 +1,27 @@
 //! Partitioning and dataset management for clustering.
 
-use crate::config::{ClusterParams, MAX_AA_LENGTH, MAX_PARTITIONS, MIN_MEGACLUSTER_DISSIMILARITY};
+use crate::config::{
+    ClusterParams, PartitionLevel, MAX_AA_LENGTH, MIN_MEGACLUSTER_DISSIMILARITY,
+};
 use crate::distance::{fast_dissimilarity, get_edit_distance, merging_dissimilarity};
 use crate::essence::{Essence, EssenceKey, GeneIntern};
 use crate::megacluster::Megacluster;
 use crate::types::Mutation;
 use rustc_hash::FxHashMap;
+
+/// Key for partitioning sequences.
+///
+/// The partition key determines which partition a sequence belongs to,
+/// based on the configured [`PartitionLevel`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PartitionKey {
+    /// V gene family (0-7)
+    VFamily(u8),
+    /// Full V gene ID
+    VGene(u8),
+    /// V gene + J gene combination
+    VjGene(u8, u8),
+}
 
 /// A partition groups essences by V gene family for parallel processing.
 pub struct Partition {
@@ -253,15 +269,19 @@ impl Partition {
 
 /// Dataset containing all partitions and sequence tracking.
 pub struct Dataset {
-    /// Partitions by V gene family
-    partitions: Vec<Partition>,
+    /// Partitions indexed by partition key
+    partitions: FxHashMap<PartitionKey, Partition>,
 
-    /// Gene name interning
+    /// Gene name interning for heavy chain
     pub v_gene_intern: GeneIntern,
     pub j_gene_intern: GeneIntern,
 
-    /// Sequence tracking: (sequence_id, partition_idx, essence_idx)
-    sequences: Vec<(String, usize, usize)>,
+    /// Gene name interning for light chain (separate namespace)
+    pub light_v_gene_intern: GeneIntern,
+    pub light_j_gene_intern: GeneIntern,
+
+    /// Sequence tracking: (sequence_id, partition_key, essence_idx)
+    sequences: Vec<(String, PartitionKey, usize)>,
 
     /// Clustering parameters
     params: ClusterParams,
@@ -271,11 +291,25 @@ impl Dataset {
     /// Create a new dataset with the given parameters.
     pub fn new(params: ClusterParams) -> Self {
         Self {
-            partitions: (0..MAX_PARTITIONS).map(|_| Partition::new()).collect(),
+            partitions: FxHashMap::default(),
             v_gene_intern: GeneIntern::new(),
             j_gene_intern: GeneIntern::new(),
+            light_v_gene_intern: GeneIntern::new(),
+            light_j_gene_intern: GeneIntern::new(),
             sequences: Vec::new(),
             params,
+        }
+    }
+
+    /// Generate partition key based on configured partition level.
+    fn partition_key(&self, v_id: u8, j_id: u8, v_gene: &str) -> PartitionKey {
+        match self.params.partition_level {
+            PartitionLevel::VFamily => {
+                let family = Self::extract_v_family(v_gene) as u8;
+                PartitionKey::VFamily(family)
+            }
+            PartitionLevel::VGene => PartitionKey::VGene(v_id),
+            PartitionLevel::VjGene => PartitionKey::VjGene(v_id, j_id),
         }
     }
 
@@ -321,12 +355,18 @@ impl Dataset {
         let v_gene = Self::strip_allele(v_gene);
         let j_gene = Self::strip_allele(j_gene);
 
-        // Get partition
-        let partition_idx = Self::extract_v_family(v_gene);
-
-        // Intern gene names
+        // Intern gene names (needed for partition key generation)
         let v_id = self.v_gene_intern.intern(v_gene);
         let j_id = self.j_gene_intern.intern(j_gene);
+
+        // Generate partition key based on configuration
+        let partition_key = self.partition_key(v_id, j_id, v_gene);
+
+        // Get or create partition
+        let partition = self
+            .partitions
+            .entry(partition_key.clone())
+            .or_insert_with(Partition::new);
 
         // Truncate CDR3 if necessary
         let cdr3 = if cdr3.len() > MAX_AA_LENGTH {
@@ -337,14 +377,74 @@ impl Dataset {
 
         // Create essence key and look up/create essence
         let key = EssenceKey::new(cdr3.to_string(), v_id, j_id);
-        let essence_idx = self.partitions[partition_idx].essence_lookup(key);
+        let essence_idx = partition.essence_lookup(key);
 
         // Add mutations to essence
-        self.partitions[partition_idx].essences[essence_idx].push_mutlist(mutations.to_vec());
+        partition.essences[essence_idx].push_mutlist(mutations.to_vec());
 
         // Track sequence
         self.sequences
-            .push((seq_id.to_string(), partition_idx, essence_idx));
+            .push((seq_id.to_string(), partition_key, essence_idx));
+    }
+
+    /// Add a paired heavy/light sequence to the dataset.
+    ///
+    /// Light chain V/J genes contribute to essence identity and scoring,
+    /// but partitioning is done by heavy chain V/J only (to avoid partition explosion).
+    pub fn add_paired_sequence(
+        &mut self,
+        seq_id: &str,
+        heavy_v_gene: &str,
+        heavy_j_gene: &str,
+        heavy_cdr3: &str,
+        light_v_gene: &str,
+        light_j_gene: &str,
+        mutations: &[Mutation],
+    ) {
+        // Strip allele info
+        let heavy_v = Self::strip_allele(heavy_v_gene);
+        let heavy_j = Self::strip_allele(heavy_j_gene);
+        let light_v = Self::strip_allele(light_v_gene);
+        let light_j = Self::strip_allele(light_j_gene);
+
+        // Intern gene names
+        let heavy_v_id = self.v_gene_intern.intern(heavy_v);
+        let heavy_j_id = self.j_gene_intern.intern(heavy_j);
+        let light_v_id = self.light_v_gene_intern.intern(light_v);
+        let light_j_id = self.light_j_gene_intern.intern(light_j);
+
+        // Partition by HEAVY chain V/J only (avoid partition explosion)
+        let partition_key = self.partition_key(heavy_v_id, heavy_j_id, heavy_v);
+
+        // Get or create partition
+        let partition = self
+            .partitions
+            .entry(partition_key.clone())
+            .or_insert_with(Partition::new);
+
+        // Truncate CDR3 if necessary
+        let cdr3 = if heavy_cdr3.len() > MAX_AA_LENGTH {
+            &heavy_cdr3[..MAX_AA_LENGTH]
+        } else {
+            heavy_cdr3
+        };
+
+        // Create PAIRED essence key (includes light chain genes)
+        let key = EssenceKey::new_paired(
+            cdr3.to_string(),
+            heavy_v_id,
+            heavy_j_id,
+            light_v_id,
+            light_j_id,
+        );
+        let essence_idx = partition.essence_lookup(key);
+
+        // Add mutations to essence
+        partition.essences[essence_idx].push_mutlist(mutations.to_vec());
+
+        // Track sequence
+        self.sequences
+            .push((seq_id.to_string(), partition_key, essence_idx));
     }
 
     /// Process all partitions and return (sequence_id, cluster_id) pairs.
@@ -352,16 +452,19 @@ impl Dataset {
         let mut next_cluster = 1u32;
 
         // Process each partition
-        for partition in &mut self.partitions {
+        for partition in self.partitions.values_mut() {
             partition.process(&self.params, &mut next_cluster);
         }
 
         // Collect results
         self.sequences
             .iter()
-            .map(|(seq_id, part_idx, ess_idx)| {
-                let cluster_id = self.partitions[*part_idx].essences[*ess_idx]
-                    .cluster_id
+            .map(|(seq_id, partition_key, ess_idx)| {
+                let cluster_id = self
+                    .partitions
+                    .get(partition_key)
+                    .and_then(|p| p.essences.get(*ess_idx))
+                    .and_then(|e| e.cluster_id)
                     .unwrap_or(0);
                 (seq_id.clone(), cluster_id)
             })
@@ -411,5 +514,57 @@ mod tests {
         assert_eq!(seq1_cluster, seq2_cluster);
         // seq3 is in different partition, likely different cluster
         // (but could be same if dissimilarity is low enough)
+        assert_ne!(seq1_cluster, seq3_cluster);
+    }
+
+    #[test]
+    fn test_partition_level_v_family() {
+        let params = ClusterParams::default().with_partition_level(PartitionLevel::VFamily);
+        let mut dataset = Dataset::new(params);
+
+        dataset.add_sequence("seq1", "IGHV3-20*01", "IGHJ4*02", "CARFDY", &[]);
+        dataset.add_sequence("seq2", "IGHV3-21*01", "IGHJ4*02", "CARFDY", &[]);
+
+        // Both should be in same partition (V family 3)
+        assert_eq!(dataset.partitions.len(), 1);
+        assert!(dataset
+            .partitions
+            .contains_key(&PartitionKey::VFamily(3)));
+    }
+
+    #[test]
+    fn test_partition_level_v_gene() {
+        let params = ClusterParams::default().with_partition_level(PartitionLevel::VGene);
+        let mut dataset = Dataset::new(params);
+
+        dataset.add_sequence("seq1", "IGHV3-20*01", "IGHJ4*02", "CARFDY", &[]);
+        dataset.add_sequence("seq2", "IGHV3-21*01", "IGHJ4*02", "CARFDY", &[]);
+
+        // Different V genes -> different partitions
+        assert_eq!(dataset.partitions.len(), 2);
+    }
+
+    #[test]
+    fn test_partition_level_vj_gene() {
+        let params = ClusterParams::default().with_partition_level(PartitionLevel::VjGene);
+        let mut dataset = Dataset::new(params);
+
+        dataset.add_sequence("seq1", "IGHV3-20*01", "IGHJ4*02", "CARFDY", &[]);
+        dataset.add_sequence("seq2", "IGHV3-20*01", "IGHJ6*01", "CARFDY", &[]);
+
+        // Same V, different J -> different partitions
+        assert_eq!(dataset.partitions.len(), 2);
+    }
+
+    #[test]
+    fn test_partition_level_vj_gene_same_vj() {
+        let params = ClusterParams::default().with_partition_level(PartitionLevel::VjGene);
+        let mut dataset = Dataset::new(params);
+
+        dataset.add_sequence("seq1", "IGHV3-20*01", "IGHJ4*02", "CARFDY", &[]);
+        dataset.add_sequence("seq2", "IGHV3-20*01", "IGHJ4*02", "CARDFW", &[]);
+
+        // Same V and J -> same partition
+        assert_eq!(dataset.partitions.len(), 1);
     }
 }

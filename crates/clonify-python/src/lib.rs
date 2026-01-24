@@ -1,7 +1,29 @@
 //! Python bindings for the clonify clustering library.
 
-use clonify_core::{ClusterParams, Mutation};
+use clonify_core::{ClusterParams, Mutation, PartitionLevel};
 use pyo3::prelude::*;
+
+/// Python-exposed partition level enum.
+#[pyclass(name = "PartitionLevel", eq, eq_int)]
+#[derive(Clone, PartialEq)]
+pub enum PyPartitionLevel {
+    /// Partition by V gene family (IGHV1-7 + overflow) - 8 partitions max
+    VFamily = 0,
+    /// Partition by full V gene (~50-100 partitions)
+    VGene = 1,
+    /// Partition by V+J gene combination (~300-600 partitions)
+    VjGene = 2,
+}
+
+impl From<PyPartitionLevel> for PartitionLevel {
+    fn from(val: PyPartitionLevel) -> Self {
+        match val {
+            PyPartitionLevel::VFamily => PartitionLevel::VFamily,
+            PyPartitionLevel::VGene => PartitionLevel::VGene,
+            PyPartitionLevel::VjGene => PartitionLevel::VjGene,
+        }
+    }
+}
 
 /// Python-exposed clustering parameters.
 #[pyclass(name = "ClusterParams")]
@@ -18,7 +40,8 @@ impl PyClusterParams {
         mut_value = 0.35,
         len_penalty = 2,
         epsilon = 0.001,
-        min_center_size = None
+        min_center_size = None,
+        partition_level = None
     ))]
     fn new(
         cutoff: f64,
@@ -26,6 +49,7 @@ impl PyClusterParams {
         len_penalty: i32,
         epsilon: f64,
         min_center_size: Option<usize>,
+        partition_level: Option<PyPartitionLevel>,
     ) -> Self {
         Self {
             inner: ClusterParams {
@@ -35,6 +59,7 @@ impl PyClusterParams {
                 epsilon,
                 min_center_size,
                 n_threads: None,
+                partition_level: partition_level.map(Into::into).unwrap_or_default(),
             },
         }
     }
@@ -57,6 +82,15 @@ impl PyClusterParams {
     #[getter]
     fn epsilon(&self) -> f64 {
         self.inner.epsilon
+    }
+
+    #[getter]
+    fn partition_level(&self) -> &str {
+        match self.inner.partition_level {
+            PartitionLevel::VFamily => "v_family",
+            PartitionLevel::VGene => "v_gene",
+            PartitionLevel::VjGene => "vj_gene",
+        }
     }
 }
 
@@ -135,6 +169,57 @@ fn parse_mutations(mutation_str: &str) -> Vec<u16> {
     mutations
 }
 
+/// Cluster paired antibody sequences (heavy + light chain).
+///
+/// # Arguments
+/// * `sequence_ids` - List of sequence identifiers
+/// * `heavy_v_genes` - List of heavy chain V gene names
+/// * `heavy_j_genes` - List of heavy chain J gene names
+/// * `heavy_cdr3s` - List of heavy chain CDR3/junction amino acid sequences
+/// * `light_v_genes` - List of light chain V gene names
+/// * `light_j_genes` - List of light chain J gene names
+/// * `mutations` - List of mutation lists (each as list of encoded mutations)
+/// * `params` - Clustering parameters
+///
+/// # Returns
+/// List of (sequence_id, cluster_id) tuples
+#[pyfunction]
+#[pyo3(signature = (
+    sequence_ids,
+    heavy_v_genes, heavy_j_genes, heavy_cdr3s,
+    light_v_genes, light_j_genes,
+    mutations,
+    params = None
+))]
+fn cluster_paired(
+    sequence_ids: Vec<String>,
+    heavy_v_genes: Vec<String>,
+    heavy_j_genes: Vec<String>,
+    heavy_cdr3s: Vec<String>,
+    light_v_genes: Vec<String>,
+    light_j_genes: Vec<String>,
+    mutations: Vec<Vec<u16>>,
+    params: Option<PyClusterParams>,
+) -> PyResult<Vec<(String, u32)>> {
+    let params = params.map(|p| p.inner).unwrap_or_default();
+    let mut dataset = clonify_core::partition::Dataset::new(params);
+
+    for i in 0..sequence_ids.len() {
+        let muts: Vec<Mutation> = mutations.get(i).map(|v| v.clone()).unwrap_or_default();
+        dataset.add_paired_sequence(
+            &sequence_ids[i],
+            &heavy_v_genes[i],
+            &heavy_j_genes[i],
+            &heavy_cdr3s[i],
+            &light_v_genes[i],
+            &light_j_genes[i],
+            &muts,
+        );
+    }
+
+    Ok(dataset.process())
+}
+
 /// Compute Hamming distance between two equal-length strings.
 #[pyfunction]
 fn hamming_distance(s1: &str, s2: &str) -> usize {
@@ -151,7 +236,9 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyClusterParams>()?;
+    m.add_class::<PyPartitionLevel>()?;
     m.add_function(wrap_pyfunction!(cluster, m)?)?;
+    m.add_function(wrap_pyfunction!(cluster_paired, m)?)?;
     m.add_function(wrap_pyfunction!(encode_mutation, m)?)?;
     m.add_function(wrap_pyfunction!(parse_mutations, m)?)?;
     m.add_function(wrap_pyfunction!(hamming_distance, m)?)?;

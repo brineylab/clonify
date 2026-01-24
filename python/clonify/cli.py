@@ -31,27 +31,65 @@ def run(
     length_penalty: float = typer.Option(
         2.0, "--length-penalty", "-l", help="Penalty per unit length difference"
     ),
+    partition_level: str = typer.Option(
+        "vj_gene",
+        "--partition-level",
+        "-p",
+        help="Partitioning strategy: v_family, v_gene, or vj_gene",
+    ),
+    # Paired mode options
+    paired: bool = typer.Option(
+        False, "--paired", help="Enable paired heavy/light chain mode"
+    ),
+    heavy_suffix: str = typer.Option(
+        ":0", "--heavy-suffix", help="Column suffix for heavy chain (paired mode)"
+    ),
+    light_suffix: str = typer.Option(
+        ":1", "--light-suffix", help="Column suffix for light chain (paired mode)"
+    ),
+    # Column keys (unpaired mode)
     id_key: str | None = typer.Option(
         None, "--id-key", help="Column name for sequence IDs"
     ),
     vgene_key: str | None = typer.Option(
-        None, "--vgene-key", help="Column name for V gene"
+        None, "--vgene-key", help="Column name for V gene (unpaired mode)"
     ),
     jgene_key: str | None = typer.Option(
-        None, "--jgene-key", help="Column name for J gene"
+        None, "--jgene-key", help="Column name for J gene (unpaired mode)"
     ),
     cdr3_key: str | None = typer.Option(
-        None, "--cdr3-key", help="Column name for CDR3/junction"
+        None, "--cdr3-key", help="Column name for CDR3/junction (unpaired mode)"
     ),
     mutations_key: str | None = typer.Option(
         None, "--mutations-key", help="Column name for mutations"
     ),
+    # Column keys (paired mode)
+    heavy_vgene_key: str | None = typer.Option(
+        None, "--heavy-vgene-key", help="Column name for heavy chain V gene (paired mode)"
+    ),
+    heavy_jgene_key: str | None = typer.Option(
+        None, "--heavy-jgene-key", help="Column name for heavy chain J gene (paired mode)"
+    ),
+    heavy_cdr3_key: str | None = typer.Option(
+        None, "--heavy-cdr3-key", help="Column name for heavy chain CDR3 (paired mode)"
+    ),
+    light_vgene_key: str | None = typer.Option(
+        None, "--light-vgene-key", help="Column name for light chain V gene (paired mode)"
+    ),
+    light_jgene_key: str | None = typer.Option(
+        None, "--light-jgene-key", help="Column name for light chain J gene (paired mode)"
+    ),
+    # Output options
     lineage_column: str = typer.Option(
         "lineage", "--lineage-col", help="Name of output lineage column"
     ),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress output"),
 ) -> None:
-    """Cluster antibody sequences into clonal lineages."""
+    """Cluster antibody sequences into clonal lineages.
+
+    Supports both unpaired (heavy chain only) and paired (heavy + light chain) sequences.
+    Use --paired to enable paired mode for data with both chains.
+    """
     from clonify.api import clonify
 
     if not input_path.exists():
@@ -69,11 +107,20 @@ def run(
             distance_cutoff=distance_cutoff,
             shared_mutation_bonus=shared_mutation_bonus,
             length_penalty_multiplier=length_penalty,
+            partition_level=partition_level,
+            paired=paired,
+            heavy_suffix=heavy_suffix,
+            light_suffix=light_suffix,
             id_key=id_key,
             vgene_key=vgene_key,
             jgene_key=jgene_key,
             cdr3_key=cdr3_key,
             mutations_key=mutations_key,
+            heavy_vgene_key=heavy_vgene_key,
+            heavy_jgene_key=heavy_jgene_key,
+            heavy_cdr3_key=heavy_cdr3_key,
+            light_vgene_key=light_vgene_key,
+            light_jgene_key=light_jgene_key,
             lineage_column=lineage_column,
             verbose=not quiet,
         )

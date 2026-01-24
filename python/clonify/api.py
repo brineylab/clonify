@@ -8,9 +8,22 @@ from pathlib import Path
 import pandas as pd
 import polars as pl
 
-from clonify._native import ClusterParams, cluster, parse_mutations
+from clonify._native import (
+    ClusterParams,
+    PartitionLevel,
+    cluster,
+    cluster_paired,
+    parse_mutations,
+)
 
-# Standard column names to search for
+# Mapping from string partition level names to enum values
+PARTITION_LEVELS = {
+    "v_family": PartitionLevel.VFamily,
+    "v_gene": PartitionLevel.VGene,
+    "vj_gene": PartitionLevel.VjGene,
+}
+
+# Standard column names to search for (unpaired sequences)
 COLUMN_ALIASES = {
     "sequence_id": ["sequence_id", "seq_id", "id", "name"],
     "v_gene": ["v_gene", "v_call", "vgene", "v"],
@@ -18,6 +31,49 @@ COLUMN_ALIASES = {
     "cdr3": ["junction_aa", "cdr3_aa", "cdr3", "junction", "junc_aa"],
     "mutations": ["v_mutations", "mutations", "muts", "shm"],
 }
+
+
+def _build_paired_aliases(heavy_suffix: str, light_suffix: str) -> dict[str, list[str]]:
+    """Build column aliases for paired sequence format."""
+    return {
+        "sequence_id": ["sequence_id", "seq_id", "id", "name"],
+        "heavy_v_gene": [
+            f"v_gene{heavy_suffix}",
+            f"v_call{heavy_suffix}",
+            f"vgene{heavy_suffix}",
+            "heavy_v_gene",
+            "heavy_v_call",
+        ],
+        "heavy_j_gene": [
+            f"j_gene{heavy_suffix}",
+            f"j_call{heavy_suffix}",
+            f"jgene{heavy_suffix}",
+            "heavy_j_gene",
+            "heavy_j_call",
+        ],
+        "heavy_cdr3": [
+            f"junction_aa{heavy_suffix}",
+            f"cdr3_aa{heavy_suffix}",
+            f"cdr3{heavy_suffix}",
+            "heavy_junction_aa",
+            "heavy_cdr3",
+        ],
+        "light_v_gene": [
+            f"v_gene{light_suffix}",
+            f"v_call{light_suffix}",
+            f"vgene{light_suffix}",
+            "light_v_gene",
+            "light_v_call",
+        ],
+        "light_j_gene": [
+            f"j_gene{light_suffix}",
+            f"j_call{light_suffix}",
+            f"jgene{light_suffix}",
+            "light_j_gene",
+            "light_j_call",
+        ],
+        "mutations": ["v_mutations", "mutations", "muts", "shm"],
+    }
 
 
 def _find_column(df: pl.DataFrame, aliases: list[str], custom: str | None = None) -> str:
@@ -117,12 +173,24 @@ def clonify(
     distance_cutoff: float = 0.35,
     shared_mutation_bonus: float = 0.35,
     length_penalty_multiplier: float = 2.0,
-    # Column keys
+    partition_level: str = "vj_gene",
+    # Paired sequence options
+    paired: bool = False,
+    heavy_suffix: str = ":0",
+    light_suffix: str = ":1",
+    # Column keys (unpaired mode)
     id_key: str | None = None,
     vgene_key: str | None = None,
     jgene_key: str | None = None,
     cdr3_key: str | None = None,
     mutations_key: str | None = None,
+    # Column keys (paired mode)
+    heavy_vgene_key: str | None = None,
+    heavy_jgene_key: str | None = None,
+    heavy_cdr3_key: str | None = None,
+    light_vgene_key: str | None = None,
+    light_jgene_key: str | None = None,
+    # Other options
     mutation_delimiter: str = "|",
     # Output options
     lineage_column: str = "lineage",
@@ -148,16 +216,38 @@ def clonify(
         Bonus weight for shared mutations (default: 0.35).
     length_penalty_multiplier : float
         Penalty per unit length difference in CDR3 (default: 2.0).
+    partition_level : str
+        Partitioning strategy: "v_family" (8 partitions by V gene family),
+        "v_gene" (partition by full V gene), or "vj_gene" (partition by V+J
+        gene combination, default). Finer partitioning improves performance
+        on large datasets.
+    paired : bool
+        Enable paired heavy/light chain mode (default: False). When True,
+        light chain V/J genes are used in scoring (not partitioning).
+    heavy_suffix : str
+        Column suffix for heavy chain columns in paired mode (default: ":0").
+    light_suffix : str
+        Column suffix for light chain columns in paired mode (default: ":1").
     id_key : str, optional
         Column name for sequence IDs.
     vgene_key : str, optional
-        Column name for V gene.
+        Column name for V gene (unpaired mode).
     jgene_key : str, optional
-        Column name for J gene.
+        Column name for J gene (unpaired mode).
     cdr3_key : str, optional
-        Column name for CDR3/junction amino acid sequence.
+        Column name for CDR3/junction amino acid sequence (unpaired mode).
     mutations_key : str, optional
         Column name for mutations.
+    heavy_vgene_key : str, optional
+        Column name for heavy chain V gene (paired mode).
+    heavy_jgene_key : str, optional
+        Column name for heavy chain J gene (paired mode).
+    heavy_cdr3_key : str, optional
+        Column name for heavy chain CDR3 (paired mode).
+    light_vgene_key : str, optional
+        Column name for light chain V gene (paired mode).
+    light_jgene_key : str, optional
+        Column name for light chain J gene (paired mode).
     mutation_delimiter : str
         Delimiter for mutation strings (default: "|").
     lineage_column : str
@@ -177,40 +267,14 @@ def clonify(
     # Load data
     df = _load_dataframe(data, input_format)
 
-    # Find columns
-    id_col = _find_column(df, COLUMN_ALIASES["sequence_id"], id_key)
-    v_col = _find_column(df, COLUMN_ALIASES["v_gene"], vgene_key)
-    j_col = _find_column(df, COLUMN_ALIASES["j_gene"], jgene_key)
-    cdr3_col = _find_column(df, COLUMN_ALIASES["cdr3"], cdr3_key)
-
-    # Mutations column is optional
-    try:
-        mut_col = _find_column(df, COLUMN_ALIASES["mutations"], mutations_key)
-    except ValueError:
-        mut_col = None
-
-    # Extract data
-    sequence_ids = df[id_col].to_list()
-    v_genes = df[v_col].to_list()
-    j_genes = df[j_col].to_list()
-    cdr3s = df[cdr3_col].to_list()
-
-    # Parse mutations
-    if mut_col is not None:
-        raw_mutations = df[mut_col].to_list()
-        mutations = [
-            parse_mutations(str(m) if m is not None else "") for m in raw_mutations
-        ]
-    else:
-        mutations = [[] for _ in sequence_ids]
-
-    # Handle None values
-    v_genes = [v if v is not None else "" for v in v_genes]
-    j_genes = [j if j is not None else "" for j in j_genes]
-    cdr3s = [c if c is not None else "" for c in cdr3s]
-
-    if verbose:
-        print(f"Clustering {len(sequence_ids)} sequences...")
+    # Validate partition level
+    partition_level_lower = partition_level.lower()
+    if partition_level_lower not in PARTITION_LEVELS:
+        valid_levels = ", ".join(PARTITION_LEVELS.keys())
+        raise ValueError(
+            f"Invalid partition_level: '{partition_level}'. Must be one of: {valid_levels}"
+        )
+    partition_level_enum = PARTITION_LEVELS[partition_level_lower]
 
     # Create parameters
     params = ClusterParams(
@@ -218,10 +282,114 @@ def clonify(
         mut_value=shared_mutation_bonus,
         len_penalty=int(length_penalty_multiplier),
         epsilon=0.001,
+        partition_level=partition_level_enum,
     )
 
-    # Run clustering
-    results = cluster(sequence_ids, v_genes, j_genes, cdr3s, mutations, params)
+    if paired:
+        # Paired mode: heavy + light chain
+        paired_aliases = _build_paired_aliases(heavy_suffix, light_suffix)
+
+        # Find columns
+        id_col = _find_column(df, paired_aliases["sequence_id"], id_key)
+        heavy_v_col = _find_column(
+            df, paired_aliases["heavy_v_gene"], heavy_vgene_key
+        )
+        heavy_j_col = _find_column(
+            df, paired_aliases["heavy_j_gene"], heavy_jgene_key
+        )
+        heavy_cdr3_col = _find_column(
+            df, paired_aliases["heavy_cdr3"], heavy_cdr3_key
+        )
+        light_v_col = _find_column(
+            df, paired_aliases["light_v_gene"], light_vgene_key
+        )
+        light_j_col = _find_column(
+            df, paired_aliases["light_j_gene"], light_jgene_key
+        )
+
+        # Mutations column is optional
+        try:
+            mut_col = _find_column(df, paired_aliases["mutations"], mutations_key)
+        except ValueError:
+            mut_col = None
+
+        # Extract data
+        sequence_ids = df[id_col].to_list()
+        heavy_v_genes = df[heavy_v_col].to_list()
+        heavy_j_genes = df[heavy_j_col].to_list()
+        heavy_cdr3s = df[heavy_cdr3_col].to_list()
+        light_v_genes = df[light_v_col].to_list()
+        light_j_genes = df[light_j_col].to_list()
+
+        # Parse mutations
+        if mut_col is not None:
+            raw_mutations = df[mut_col].to_list()
+            mutations = [
+                parse_mutations(str(m) if m is not None else "") for m in raw_mutations
+            ]
+        else:
+            mutations = [[] for _ in sequence_ids]
+
+        # Handle None values
+        heavy_v_genes = [v if v is not None else "" for v in heavy_v_genes]
+        heavy_j_genes = [j if j is not None else "" for j in heavy_j_genes]
+        heavy_cdr3s = [c if c is not None else "" for c in heavy_cdr3s]
+        light_v_genes = [v if v is not None else "" for v in light_v_genes]
+        light_j_genes = [j if j is not None else "" for j in light_j_genes]
+
+        if verbose:
+            print(f"Clustering {len(sequence_ids)} paired sequences...")
+
+        # Run paired clustering
+        results = cluster_paired(
+            sequence_ids,
+            heavy_v_genes,
+            heavy_j_genes,
+            heavy_cdr3s,
+            light_v_genes,
+            light_j_genes,
+            mutations,
+            params,
+        )
+    else:
+        # Unpaired mode: heavy chain only
+        # Find columns
+        id_col = _find_column(df, COLUMN_ALIASES["sequence_id"], id_key)
+        v_col = _find_column(df, COLUMN_ALIASES["v_gene"], vgene_key)
+        j_col = _find_column(df, COLUMN_ALIASES["j_gene"], jgene_key)
+        cdr3_col = _find_column(df, COLUMN_ALIASES["cdr3"], cdr3_key)
+
+        # Mutations column is optional
+        try:
+            mut_col = _find_column(df, COLUMN_ALIASES["mutations"], mutations_key)
+        except ValueError:
+            mut_col = None
+
+        # Extract data
+        sequence_ids = df[id_col].to_list()
+        v_genes = df[v_col].to_list()
+        j_genes = df[j_col].to_list()
+        cdr3s = df[cdr3_col].to_list()
+
+        # Parse mutations
+        if mut_col is not None:
+            raw_mutations = df[mut_col].to_list()
+            mutations = [
+                parse_mutations(str(m) if m is not None else "") for m in raw_mutations
+            ]
+        else:
+            mutations = [[] for _ in sequence_ids]
+
+        # Handle None values
+        v_genes = [v if v is not None else "" for v in v_genes]
+        j_genes = [j if j is not None else "" for j in j_genes]
+        cdr3s = [c if c is not None else "" for c in cdr3s]
+
+        if verbose:
+            print(f"Clustering {len(sequence_ids)} sequences...")
+
+        # Run clustering
+        results = cluster(sequence_ids, v_genes, j_genes, cdr3s, mutations, params)
 
     # Build assignment dictionary
     assignments = {seq_id: str(cluster_id) for seq_id, cluster_id in results}

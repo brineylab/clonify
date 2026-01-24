@@ -25,7 +25,7 @@ pub mod partition;
 pub mod types;
 
 // Re-export commonly used types
-pub use config::ClusterParams;
+pub use config::{ClusterParams, PartitionLevel};
 pub use essence::{Essence, EssenceKey};
 pub use types::{MutBag, MutList, Mutation};
 

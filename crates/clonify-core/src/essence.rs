@@ -7,32 +7,67 @@ use std::hash::{Hash, Hasher};
 
 /// Unique identifier for an antibody sequence type.
 ///
-/// Two sequences with identical (junction, v_gene, j_gene) are considered
-/// the same "type" and will be grouped into a single Essence.
+/// For unpaired sequences, only heavy chain fields are used.
+/// For paired sequences, light chain fields contribute to identity and scoring.
+///
+/// Two sequences with identical (junction, v_gene, j_gene, light_v_gene, light_j_gene)
+/// are considered the same "type" and will be grouped into a single Essence.
 #[derive(Clone, Debug)]
 pub struct EssenceKey {
-    /// CDR3/junction amino acid sequence
+    /// CDR3/junction amino acid sequence (heavy chain)
     pub junction: String,
-    /// V gene identifier (interned)
+    /// V gene identifier - heavy chain (interned)
     pub v_gene: u8,
-    /// J gene identifier (interned)
+    /// J gene identifier - heavy chain (interned)
     pub j_gene: u8,
+    /// V gene identifier - light chain (interned), None for unpaired
+    pub light_v_gene: Option<u8>,
+    /// J gene identifier - light chain (interned), None for unpaired
+    pub light_j_gene: Option<u8>,
 }
 
 impl EssenceKey {
-    /// Create a new essence key.
+    /// Create a new essence key for unpaired sequences.
     pub fn new(junction: String, v_gene: u8, j_gene: u8) -> Self {
         Self {
             junction,
             v_gene,
             j_gene,
+            light_v_gene: None,
+            light_j_gene: None,
         }
+    }
+
+    /// Create a new essence key for paired sequences.
+    pub fn new_paired(
+        junction: String,
+        v_gene: u8,
+        j_gene: u8,
+        light_v_gene: u8,
+        light_j_gene: u8,
+    ) -> Self {
+        Self {
+            junction,
+            v_gene,
+            j_gene,
+            light_v_gene: Some(light_v_gene),
+            light_j_gene: Some(light_j_gene),
+        }
+    }
+
+    /// Check if this is a paired sequence.
+    pub fn is_paired(&self) -> bool {
+        self.light_v_gene.is_some()
     }
 }
 
 impl PartialEq for EssenceKey {
     fn eq(&self, other: &Self) -> bool {
-        self.v_gene == other.v_gene && self.j_gene == other.j_gene && self.junction == other.junction
+        self.v_gene == other.v_gene
+            && self.j_gene == other.j_gene
+            && self.junction == other.junction
+            && self.light_v_gene == other.light_v_gene
+            && self.light_j_gene == other.light_j_gene
     }
 }
 
@@ -43,6 +78,8 @@ impl Hash for EssenceKey {
         self.junction.hash(state);
         self.v_gene.hash(state);
         self.j_gene.hash(state);
+        self.light_v_gene.hash(state);
+        self.light_j_gene.hash(state);
     }
 }
 
@@ -57,6 +94,8 @@ impl Ord for EssenceKey {
         self.v_gene
             .cmp(&other.v_gene)
             .then_with(|| self.j_gene.cmp(&other.j_gene))
+            .then_with(|| self.light_v_gene.cmp(&other.light_v_gene))
+            .then_with(|| self.light_j_gene.cmp(&other.light_j_gene))
             .then_with(|| self.junction.cmp(&other.junction))
     }
 }
@@ -263,5 +302,26 @@ mod tests {
         assert_ne!(id1, id2);
         assert_eq!(intern.lookup(id1), Some("IGHV3-20"));
         assert_eq!(intern.lookup(id2), Some("IGHV1-2"));
+    }
+
+    #[test]
+    fn test_essence_key_paired() {
+        let k1 = EssenceKey::new_paired("CARFDY".to_string(), 1, 2, 3, 4);
+        let k2 = EssenceKey::new_paired("CARFDY".to_string(), 1, 2, 3, 4);
+        let k3 = EssenceKey::new_paired("CARFDY".to_string(), 1, 2, 5, 4); // Different light V
+
+        assert!(k1.is_paired());
+        assert_eq!(k1, k2);
+        assert_ne!(k1, k3);
+    }
+
+    #[test]
+    fn test_essence_key_unpaired_not_equal_paired() {
+        let unpaired = EssenceKey::new("CARFDY".to_string(), 1, 2);
+        let paired = EssenceKey::new_paired("CARFDY".to_string(), 1, 2, 3, 4);
+
+        assert!(!unpaired.is_paired());
+        assert!(paired.is_paired());
+        assert_ne!(unpaired, paired);
     }
 }
