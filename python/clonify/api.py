@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union
 
@@ -133,6 +134,7 @@ def clonify(
     mutation_delimiter: str = "|",
     # Output options
     lineage_column: str = "lineage",
+    lineage_size_column: str = "lineage_size",
     verbose: bool = True,
 ) -> tuple[dict[str, str], pl.DataFrame]:
     """Cluster antibody sequences into clonal lineages.
@@ -168,6 +170,8 @@ def clonify(
         Delimiter for mutation strings (default: "|").
     lineage_column : str
         Name of the output lineage column (default: "lineage").
+    lineage_size_column : str
+        Name of the output lineage size column (default: "lineage_size").
     verbose : bool
         Print progress information (default: True).
 
@@ -230,9 +234,16 @@ def clonify(
     # Build assignment dictionary
     assignments = {seq_id: str(cluster_id) for seq_id, cluster_id in results}
 
-    # Add lineage column to DataFrame
+    # Compute lineage sizes
+    lineage_counts = Counter(assignments.values())
+
+    # Add lineage and lineage_size columns to DataFrame
     lineages = [assignments.get(seq_id, "") for seq_id in sequence_ids]
-    result_df = df.with_columns(pl.Series(name=lineage_column, values=lineages))
+    sizes = [lineage_counts.get(assignments.get(seq_id, ""), 0) for seq_id in sequence_ids]
+    result_df = df.with_columns([
+        pl.Series(name=lineage_column, values=lineages),
+        pl.Series(name=lineage_size_column, values=sizes),
+    ])
 
     if verbose:
         n_clusters = len(set(assignments.values()))
