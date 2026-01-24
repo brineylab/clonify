@@ -1,10 +1,10 @@
 # Clonify
 
-High-performance antibody clonotype clustering.
+Fast and accurate antibody clonal lineage assignment.
 
 ## Overview
 
-Clonify clusters antibody sequences into clonal lineages based on:
+`clonify` groups antibody sequences into clonal lineages based on:
 - CDR3/junction amino acid sequence similarity
 - V and J gene usage
 - Shared somatic mutations
