@@ -258,6 +258,155 @@ class TestDeterminism:
 
         assert assignments1 == assignments2
 
+    def test_deterministic_names_shuffled_input(self, sample_df):
+        """Test that shuffled input produces same lineage names."""
+        # Original order
+        assignments1, result1 = clonify(
+            sample_df,
+            vgene_key="v_gene",
+            jgene_key="j_gene",
+            cdr3_key="junction_aa",
+            mutations_key="v_mutations",
+            id_key="sequence_id",
+            verbose=False,
+        )
+
+        # Shuffled order
+        shuffled = sample_df.sample(fraction=1.0, shuffle=True, seed=42)
+        assignments2, result2 = clonify(
+            shuffled,
+            vgene_key="v_gene",
+            jgene_key="j_gene",
+            cdr3_key="junction_aa",
+            mutations_key="v_mutations",
+            id_key="sequence_id",
+            verbose=False,
+        )
+
+        # Same sequence IDs should have same lineage names
+        for seq_id in assignments1:
+            assert assignments1[seq_id] == assignments2[seq_id], (
+                f"Sequence {seq_id} has different lineage: "
+                f"{assignments1[seq_id]} vs {assignments2[seq_id]}"
+            )
+
+    def test_hash_format(self, small_df):
+        """Test that lineage names are 8-character hex strings."""
+        import re
+
+        assignments, _ = clonify(small_df, verbose=False)
+
+        hex_pattern = re.compile(r"^[0-9a-f]{8,}$")
+        for seq_id, lineage in assignments.items():
+            assert hex_pattern.match(lineage), (
+                f"Lineage '{lineage}' is not a valid hex hash"
+            )
+
+    def test_paired_hash_determinism(self, paired_df):
+        """Test that paired mode is deterministic across shuffles."""
+        # Original order
+        assignments1, _ = clonify(
+            paired_df,
+            paired=True,
+            verbose=False,
+        )
+
+        # Shuffled order
+        shuffled = paired_df.sample(fraction=1.0, shuffle=True, seed=123)
+        assignments2, _ = clonify(
+            shuffled,
+            paired=True,
+            verbose=False,
+        )
+
+        # Same sequence IDs should have same lineage names
+        for seq_id in assignments1:
+            assert assignments1[seq_id] == assignments2[seq_id]
+
+
+class TestLineageHashFunctions:
+    """Tests for lineage hash helper functions."""
+
+    def test_compute_lineage_hash_deterministic(self):
+        """Test that _compute_lineage_hash produces same output for same input."""
+        from clonify.api import _compute_lineage_hash
+
+        cdr3s = ["CARFDY", "CARFDYW", "CARDYF"]
+        hash1 = _compute_lineage_hash(cdr3s)
+        hash2 = _compute_lineage_hash(cdr3s)
+        assert hash1 == hash2
+
+    def test_compute_lineage_hash_order_independent(self):
+        """Test that hash is independent of input order."""
+        from clonify.api import _compute_lineage_hash
+
+        cdr3s1 = ["CARFDY", "CARFDYW", "CARDYF"]
+        cdr3s2 = ["CARDYF", "CARFDY", "CARFDYW"]  # Different order
+
+        hash1 = _compute_lineage_hash(cdr3s1)
+        hash2 = _compute_lineage_hash(cdr3s2)
+        assert hash1 == hash2
+
+    def test_compute_lineage_hash_deduplicates(self):
+        """Test that duplicate CDR3s don't affect hash."""
+        from clonify.api import _compute_lineage_hash
+
+        cdr3s1 = ["CARFDY", "CARFDYW"]
+        cdr3s2 = ["CARFDY", "CARFDY", "CARFDYW", "CARFDYW"]  # Duplicates
+
+        hash1 = _compute_lineage_hash(cdr3s1)
+        hash2 = _compute_lineage_hash(cdr3s2)
+        assert hash1 == hash2
+
+    def test_compute_lineage_hash_length(self):
+        """Test that hash has correct default length."""
+        from clonify.api import _compute_lineage_hash
+
+        cdr3s = ["CARFDY"]
+        hash_val = _compute_lineage_hash(cdr3s)
+        assert len(hash_val) == 8
+
+    def test_compute_lineage_hash_custom_length(self):
+        """Test custom hash prefix length."""
+        from clonify.api import _compute_lineage_hash
+
+        cdr3s = ["CARFDY"]
+        hash_val = _compute_lineage_hash(cdr3s, prefix_length=12)
+        assert len(hash_val) == 12
+
+    def test_resolve_hash_collisions_no_collision(self):
+        """Test collision resolution with no collisions."""
+        from clonify.api import _resolve_hash_collisions
+
+        cluster_hashes = {1: "a1b2c3d4", 2: "e5f6g7h8"}
+        cdr3_by_cluster = {1: ["CARFDY"], 2: ["CARDYF"]}
+
+        result = _resolve_hash_collisions(cluster_hashes, cdr3_by_cluster)
+        assert result == cluster_hashes  # No changes when no collisions
+
+    def test_resolve_hash_collisions_with_collision(self):
+        """Test collision resolution extends hash prefix."""
+        from clonify.api import _resolve_hash_collisions, _compute_lineage_hash
+
+        # Create artificial collision by giving two clusters the same hash
+        cdr3_cluster1 = ["CARFDY"]
+        cdr3_cluster2 = ["CARDYF"]
+
+        # Both start with same hash (simulated collision)
+        cluster_hashes = {1: "aaaaaaaa", 2: "aaaaaaaa"}
+        cdr3_by_cluster = {1: cdr3_cluster1, 2: cdr3_cluster2}
+
+        result = _resolve_hash_collisions(cluster_hashes, cdr3_by_cluster)
+
+        # After resolution, the hashes should be different
+        assert result[1] != result[2]
+
+        # And they should be the actual computed hashes with extended length
+        expected_hash1 = _compute_lineage_hash(cdr3_cluster1, prefix_length=12)
+        expected_hash2 = _compute_lineage_hash(cdr3_cluster2, prefix_length=12)
+        assert result[1] == expected_hash1
+        assert result[2] == expected_hash2
+
 
 class TestPairedSequences:
     """Tests for paired heavy/light chain clustering."""

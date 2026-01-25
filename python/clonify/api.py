@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections import Counter
+import hashlib
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +16,81 @@ from clonify._native import (
     cluster_paired,
     parse_mutations,
 )
+
+def _compute_lineage_hash(cdr3_sequences: list[str], prefix_length: int = 8) -> str:
+    """Compute deterministic hash from sorted CDR3 sequences.
+
+    Parameters
+    ----------
+    cdr3_sequences : list[str]
+        CDR3 sequences in the lineage.
+    prefix_length : int
+        Number of hex characters to return (default: 8).
+
+    Returns
+    -------
+    str
+        Hex prefix of SHA-256 hash.
+    """
+    unique_cdr3s = sorted(set(cdr3_sequences))
+    canonical = "|".join(unique_cdr3s)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:prefix_length]
+
+
+def _resolve_hash_collisions(
+    cluster_hashes: dict[int, str],
+    cdr3_by_cluster: dict[int, list[str]],
+    initial_prefix: int = 8,
+) -> dict[int, str]:
+    """Extend hash prefixes to resolve collisions.
+
+    Parameters
+    ----------
+    cluster_hashes : dict[int, str]
+        Mapping from cluster ID to hash prefix.
+    cdr3_by_cluster : dict[int, list[str]]
+        Mapping from cluster ID to list of CDR3 sequences.
+    initial_prefix : int
+        Initial hash prefix length (default: 8).
+
+    Returns
+    -------
+    dict[int, str]
+        Mapping from cluster ID to collision-free hash.
+    """
+    # Group clusters by their hash values
+    hash_to_clusters: dict[str, list[int]] = defaultdict(list)
+    for cluster_id, hash_val in cluster_hashes.items():
+        hash_to_clusters[hash_val].append(cluster_id)
+
+    # Find collisions (hashes with multiple clusters)
+    collisions = {h: cids for h, cids in hash_to_clusters.items() if len(cids) > 1}
+
+    if not collisions:
+        return cluster_hashes
+
+    # Resolve collisions by extending prefix length
+    result = dict(cluster_hashes)
+    prefix_length = initial_prefix
+
+    while collisions and prefix_length < 64:  # SHA-256 has 64 hex chars max
+        prefix_length += 4  # Extend by 4 characters (16 bits)
+
+        # Recompute hashes for colliding clusters with longer prefix
+        for colliding_clusters in collisions.values():
+            for cid in colliding_clusters:
+                result[cid] = _compute_lineage_hash(
+                    cdr3_by_cluster[cid], prefix_length
+                )
+
+        # Check for remaining collisions
+        hash_to_clusters = defaultdict(list)
+        for cluster_id, hash_val in result.items():
+            hash_to_clusters[hash_val].append(cluster_id)
+        collisions = {h: cids for h, cids in hash_to_clusters.items() if len(cids) > 1}
+
+    return result
+
 
 # Mapping from string partition level names to enum values
 PARTITION_LEVELS = {
@@ -71,6 +147,13 @@ def _build_paired_aliases(heavy_suffix: str, light_suffix: str) -> dict[str, lis
             f"jgene{light_suffix}",
             "light_j_gene",
             "light_j_call",
+        ],
+        "light_cdr3": [
+            f"junction_aa{light_suffix}",
+            f"cdr3_aa{light_suffix}",
+            f"cdr3{light_suffix}",
+            "light_junction_aa",
+            "light_cdr3",
         ],
         "mutations": ["v_mutations", "mutations", "muts", "shm"],
     }
@@ -305,6 +388,12 @@ def clonify(
         light_v_col = _find_column(df, paired_aliases["light_v_gene"], light_vgene_key)
         light_j_col = _find_column(df, paired_aliases["light_j_gene"], light_jgene_key)
 
+        # Light CDR3 is optional but used for hash-based lineage naming
+        try:
+            light_cdr3_col = _find_column(df, paired_aliases["light_cdr3"], None)
+        except ValueError:
+            light_cdr3_col = None
+
         # Mutations column is optional
         try:
             mut_col = _find_column(df, paired_aliases["mutations"], mutations_key)
@@ -318,6 +407,11 @@ def clonify(
         heavy_cdr3s = df[heavy_cdr3_col].to_list()
         light_v_genes = df[light_v_col].to_list()
         light_j_genes = df[light_j_col].to_list()
+        if light_cdr3_col is not None:
+            light_cdr3s = df[light_cdr3_col].to_list()
+            light_cdr3s = [c if c is not None else "" for c in light_cdr3s]
+        else:
+            light_cdr3s = None
 
         # Parse mutations
         if mut_col is not None:
@@ -385,8 +479,41 @@ def clonify(
         # Run clustering
         results = cluster(sequence_ids, v_genes, j_genes, cdr3s, mutations, params)
 
-    # Build assignment dictionary
-    assignments = {seq_id: str(cluster_id) for seq_id, cluster_id in results}
+    # Build assignment dictionary with deterministic hash-based lineage names
+    cdr3_by_cluster: dict[int, list[str]] = defaultdict(list)
+    seq_to_cluster = {seq_id: cluster_id for seq_id, cluster_id in results}
+
+    # Collect CDR3 sequences for each cluster
+    if paired:
+        # For paired mode, combine heavy and light CDR3s
+        for i, seq_id in enumerate(sequence_ids):
+            cluster_id = seq_to_cluster.get(seq_id)
+            if cluster_id is not None:
+                heavy_cdr3 = heavy_cdr3s[i]
+                if light_cdr3s is not None:
+                    # Combine heavy:light to make a unique paired CDR3 identifier
+                    combined = f"{heavy_cdr3}:{light_cdr3s[i]}"
+                else:
+                    combined = heavy_cdr3
+                cdr3_by_cluster[cluster_id].append(combined)
+    else:
+        # For unpaired mode, use CDR3 directly
+        for i, seq_id in enumerate(sequence_ids):
+            cluster_id = seq_to_cluster.get(seq_id)
+            if cluster_id is not None:
+                cdr3_by_cluster[cluster_id].append(cdr3s[i])
+
+    # Compute hashes for each cluster
+    cluster_hashes = {
+        cid: _compute_lineage_hash(cdr3_list)
+        for cid, cdr3_list in cdr3_by_cluster.items()
+    }
+
+    # Resolve any hash collisions
+    cluster_hashes = _resolve_hash_collisions(cluster_hashes, cdr3_by_cluster)
+
+    # Map sequence IDs to hash-based lineage names
+    assignments = {seq_id: cluster_hashes[cid] for seq_id, cid in results}
 
     # Compute lineage sizes
     lineage_counts = Counter(assignments.values())
