@@ -448,3 +448,92 @@ class TestPartitionLevels:
 
         params_vgene = ClusterParams(partition_level=PartitionLevel.VGene)
         assert params_vgene.partition_level == "v_gene"
+
+
+class TestThreading:
+    """Tests for threading configuration."""
+
+    def test_n_threads_param_in_cluster_params(self):
+        """Test that n_threads parameter is accepted by ClusterParams."""
+        params = ClusterParams(n_threads=4)
+        assert params.n_threads == 4
+
+    def test_n_threads_default_is_none(self):
+        """Test that default n_threads is None."""
+        params = ClusterParams()
+        assert params.n_threads is None
+
+    def test_n_threads_accepts_one(self):
+        """Test that n_threads=1 is accepted (sequential mode)."""
+        params = ClusterParams(n_threads=1)
+        assert params.n_threads == 1
+
+    def test_sequential_mode(self, small_df):
+        """Test sequential execution mode works correctly."""
+        assignments, result_df = clonify(small_df, n_threads=1, verbose=False)
+        assert len(assignments) == len(small_df)
+        assert "lineage" in result_df.columns
+
+    def test_parallel_mode(self, small_df):
+        """Test explicit parallel execution mode works correctly."""
+        assignments, result_df = clonify(small_df, n_threads=4, verbose=False)
+        assert len(assignments) == len(small_df)
+        assert "lineage" in result_df.columns
+
+    def test_default_parallel_mode(self, small_df):
+        """Test default (None) uses parallel mode."""
+        assignments, result_df = clonify(small_df, n_threads=None, verbose=False)
+        assert len(assignments) == len(small_df)
+        assert "lineage" in result_df.columns
+
+    def test_sequential_parallel_same_results(self, sample_df):
+        """Test that sequential and parallel produce identical results."""
+        assignments_seq, _ = clonify(
+            sample_df,
+            n_threads=1,
+            vgene_key="v_gene",
+            jgene_key="j_gene",
+            cdr3_key="junction_aa",
+            mutations_key="v_mutations",
+            id_key="sequence_id",
+            verbose=False,
+        )
+
+        assignments_par, _ = clonify(
+            sample_df,
+            n_threads=4,
+            vgene_key="v_gene",
+            jgene_key="j_gene",
+            cdr3_key="junction_aa",
+            mutations_key="v_mutations",
+            id_key="sequence_id",
+            verbose=False,
+        )
+
+        assert assignments_seq == assignments_par
+
+    def test_determinism_parallel(self, sample_df):
+        """Test that parallel execution is deterministic across multiple runs."""
+        assignments1, _ = clonify(
+            sample_df,
+            n_threads=4,
+            vgene_key="v_gene",
+            jgene_key="j_gene",
+            cdr3_key="junction_aa",
+            mutations_key="v_mutations",
+            id_key="sequence_id",
+            verbose=False,
+        )
+
+        assignments2, _ = clonify(
+            sample_df,
+            n_threads=4,
+            vgene_key="v_gene",
+            jgene_key="j_gene",
+            cdr3_key="junction_aa",
+            mutations_key="v_mutations",
+            id_key="sequence_id",
+            verbose=False,
+        )
+
+        assert assignments1 == assignments2

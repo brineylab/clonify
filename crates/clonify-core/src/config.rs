@@ -118,6 +118,35 @@ impl ClusterParams {
         self
     }
 
+    /// Set the number of threads for parallel processing.
+    ///
+    /// - `None`: Use all available cores (default)
+    /// - `Some(1)`: Sequential execution
+    /// - `Some(n)`: Use exactly n threads
+    pub fn with_n_threads(mut self, n_threads: Option<usize>) -> Self {
+        self.n_threads = n_threads;
+        self
+    }
+
+    /// Get the effective thread count for rayon configuration.
+    ///
+    /// Returns the number of threads to use:
+    /// - `None` or `Some(0)` -> Returns available parallelism (all cores)
+    /// - `Some(n)` where n > 0 -> Returns n
+    pub fn effective_threads(&self) -> usize {
+        match self.n_threads {
+            None | Some(0) => std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1),
+            Some(n) => n,
+        }
+    }
+
+    /// Check if parallel execution should be used.
+    pub fn is_parallel(&self) -> bool {
+        self.n_threads != Some(1)
+    }
+
     /// Compute the automatic minimum center size based on dataset size.
     pub fn auto_min_center_size(&self, n_sequences: usize) -> usize {
         if let Some(size) = self.min_center_size {
@@ -159,5 +188,35 @@ mod tests {
         assert!((params.cutoff - 0.5).abs() < f64::EPSILON);
         assert!((params.mut_value - 0.4).abs() < f64::EPSILON);
         assert_eq!(params.len_penalty, 3);
+    }
+
+    #[test]
+    fn test_with_n_threads() {
+        let params = ClusterParams::new().with_n_threads(Some(4));
+        assert_eq!(params.n_threads, Some(4));
+        assert_eq!(params.effective_threads(), 4);
+        assert!(params.is_parallel());
+    }
+
+    #[test]
+    fn test_sequential_mode() {
+        let params = ClusterParams::new().with_n_threads(Some(1));
+        assert!(!params.is_parallel());
+        assert_eq!(params.effective_threads(), 1);
+    }
+
+    #[test]
+    fn test_default_parallel() {
+        let params = ClusterParams::new();
+        assert!(params.is_parallel());
+        assert!(params.effective_threads() >= 1);
+    }
+
+    #[test]
+    fn test_n_threads_zero_uses_all_cores() {
+        let params = ClusterParams::new().with_n_threads(Some(0));
+        assert!(params.is_parallel());
+        // Should use available parallelism, which is at least 1
+        assert!(params.effective_threads() >= 1);
     }
 }

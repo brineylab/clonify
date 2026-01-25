@@ -1,10 +1,16 @@
 //! Megacluster formation and hierarchical clustering within megaclusters.
 
+use rayon::prelude::*;
+
 use crate::config::ClusterParams;
 use crate::distance::{full_dissimilarity, get_edit_distance, hamming_distance};
 use crate::essence::Essence;
 use crate::flat_cluster::form_flat_clusters_from_dist;
 use crate::linkage::{generate_dendrogram, nn_chain_core};
+
+/// Minimum megacluster size to use parallel computation.
+/// Below this threshold, the overhead of parallelism exceeds benefits.
+const PARALLEL_THRESHOLD: usize = 10;
 
 /// A megacluster contains essences that will be hierarchically clustered together.
 #[derive(Default)]
@@ -60,19 +66,14 @@ impl Megacluster {
             return;
         }
 
+        // Determine if we should use parallel computation
+        let use_parallel = params.is_parallel() && n > PARALLEL_THRESHOLD;
+
         // Build base distance matrix (Hamming/Levenshtein)
-        let base_matrix = self.build_base_matrix(essences);
+        let base_matrix = self.build_base_matrix(essences, use_parallel);
 
         // Build full dissimilarity matrix
-        let mut dist_matrix = vec![0.0f64; n * (n - 1) / 2];
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let idx = condensed_index(n, i, j);
-                let ei = &essences[self.essence_indices[i]];
-                let ej = &essences[self.essence_indices[j]];
-                dist_matrix[idx] = full_dissimilarity(ei, ej, base_matrix[idx] as usize, params);
-            }
-        }
+        let mut dist_matrix = self.build_dissimilarity_matrix(essences, &base_matrix, params, use_parallel);
 
         // Build member weights
         let mut members: Vec<i32> = self
@@ -98,29 +99,109 @@ impl Megacluster {
     }
 
     /// Build base distance matrix (Hamming/Levenshtein distances).
-    fn build_base_matrix(&self, essences: &[Essence]) -> Vec<u8> {
+    ///
+    /// Uses parallel computation when `parallel` is true and matrix is large enough.
+    fn build_base_matrix(&self, essences: &[Essence], parallel: bool) -> Vec<u8> {
         let n = self.essence_indices.len();
-        let mut matrix = Vec::with_capacity(n * (n - 1) / 2);
-
-        for i in 0..n {
-            let ei = &essences[self.essence_indices[i]];
-            let ni = ei.key.junction.len();
-
-            for j in (i + 1)..n {
-                let ej = &essences[self.essence_indices[j]];
-                let nj = ej.key.junction.len();
-
-                let dist = if ni == nj {
-                    hamming_distance(&ei.key.junction, &ej.key.junction)
-                } else {
-                    get_edit_distance(&ei.key.junction, &ej.key.junction)
-                };
-
-                matrix.push(dist.min(255) as u8);
-            }
+        if n < 2 {
+            return Vec::new();
         }
 
-        matrix
+        // Pre-extract junction strings and lengths for better cache locality
+        let junctions: Vec<(&str, usize)> = self
+            .essence_indices
+            .iter()
+            .map(|&idx| {
+                let junc = &essences[idx].key.junction;
+                (junc.as_str(), junc.len())
+            })
+            .collect();
+
+        if parallel {
+            // Parallel: compute row by row, then flatten
+            let rows: Vec<Vec<u8>> = (0..n)
+                .into_par_iter()
+                .map(|i| {
+                    let (ji, ni) = junctions[i];
+                    ((i + 1)..n)
+                        .map(|j| {
+                            let (jj, nj) = junctions[j];
+                            let dist = if ni == nj {
+                                hamming_distance(ji, jj)
+                            } else {
+                                get_edit_distance(ji, jj)
+                            };
+                            dist.min(255) as u8
+                        })
+                        .collect()
+                })
+                .collect();
+
+            rows.into_iter().flatten().collect()
+        } else {
+            // Sequential: original algorithm
+            let mut matrix = Vec::with_capacity(n * (n - 1) / 2);
+            for i in 0..n {
+                let (ji, ni) = junctions[i];
+                for j in (i + 1)..n {
+                    let (jj, nj) = junctions[j];
+                    let dist = if ni == nj {
+                        hamming_distance(ji, jj)
+                    } else {
+                        get_edit_distance(ji, jj)
+                    };
+                    matrix.push(dist.min(255) as u8);
+                }
+            }
+            matrix
+        }
+    }
+
+    /// Build full dissimilarity matrix from base distances.
+    ///
+    /// Uses parallel computation when `parallel` is true.
+    fn build_dissimilarity_matrix(
+        &self,
+        essences: &[Essence],
+        base_matrix: &[u8],
+        params: &ClusterParams,
+        parallel: bool,
+    ) -> Vec<f64> {
+        let n = self.essence_indices.len();
+        if n < 2 {
+            return Vec::new();
+        }
+
+        if parallel {
+            // Parallel: compute row by row, then flatten
+            let rows: Vec<Vec<f64>> = (0..n)
+                .into_par_iter()
+                .map(|i| {
+                    ((i + 1)..n)
+                        .map(|j| {
+                            let idx = condensed_index(n, i, j);
+                            let ei = &essences[self.essence_indices[i]];
+                            let ej = &essences[self.essence_indices[j]];
+                            full_dissimilarity(ei, ej, base_matrix[idx] as usize, params)
+                        })
+                        .collect()
+                })
+                .collect();
+
+            rows.into_iter().flatten().collect()
+        } else {
+            // Sequential computation
+            let mut matrix = vec![0.0f64; n * (n - 1) / 2];
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let idx = condensed_index(n, i, j);
+                    let ei = &essences[self.essence_indices[i]];
+                    let ej = &essences[self.essence_indices[j]];
+                    matrix[idx] = full_dissimilarity(ei, ej, base_matrix[idx] as usize, params);
+                }
+            }
+            matrix
+        }
     }
 }
 

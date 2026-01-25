@@ -41,7 +41,8 @@ impl PyClusterParams {
         len_penalty = 2,
         epsilon = 0.001,
         min_center_size = None,
-        partition_level = None
+        partition_level = None,
+        n_threads = None
     ))]
     fn new(
         cutoff: f64,
@@ -50,6 +51,7 @@ impl PyClusterParams {
         epsilon: f64,
         min_center_size: Option<usize>,
         partition_level: Option<PyPartitionLevel>,
+        n_threads: Option<usize>,
     ) -> Self {
         Self {
             inner: ClusterParams {
@@ -58,7 +60,7 @@ impl PyClusterParams {
                 len_penalty,
                 epsilon,
                 min_center_size,
-                n_threads: None,
+                n_threads,
                 partition_level: partition_level.map(Into::into).unwrap_or_default(),
             },
         }
@@ -91,6 +93,11 @@ impl PyClusterParams {
             PartitionLevel::VGene => "v_gene",
             PartitionLevel::VjGene => "vj_gene",
         }
+    }
+
+    #[getter]
+    fn n_threads(&self) -> Option<usize> {
+        self.inner.n_threads
     }
 }
 

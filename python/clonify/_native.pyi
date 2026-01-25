@@ -1,5 +1,14 @@
 """Type stubs for the native Rust module."""
 
+from enum import IntEnum
+
+class PartitionLevel(IntEnum):
+    """Partitioning strategy for clustering."""
+
+    VFamily = 0
+    VGene = 1
+    VjGene = 2
+
 class ClusterParams:
     """Parameters for clustering algorithm."""
 
@@ -10,6 +19,8 @@ class ClusterParams:
         len_penalty: int = 2,
         epsilon: float = 0.001,
         min_center_size: int | None = None,
+        partition_level: PartitionLevel | None = None,
+        n_threads: int | None = None,
     ) -> None: ...
     @property
     def cutoff(self) -> float: ...
@@ -19,6 +30,10 @@ class ClusterParams:
     def len_penalty(self) -> int: ...
     @property
     def epsilon(self) -> float: ...
+    @property
+    def partition_level(self) -> str: ...
+    @property
+    def n_threads(self) -> int | None: ...
 
 def cluster(
     sequence_ids: list[str],
@@ -35,6 +50,33 @@ def cluster(
         v_genes: List of V gene names.
         j_genes: List of J gene names.
         cdr3s: List of CDR3/junction amino acid sequences.
+        mutations: List of mutation lists (each as list of encoded mutations).
+        params: Clustering parameters (optional).
+
+    Returns:
+        List of (sequence_id, cluster_id) tuples.
+    """
+    ...
+
+def cluster_paired(
+    sequence_ids: list[str],
+    heavy_v_genes: list[str],
+    heavy_j_genes: list[str],
+    heavy_cdr3s: list[str],
+    light_v_genes: list[str],
+    light_j_genes: list[str],
+    mutations: list[list[int]],
+    params: ClusterParams | None = None,
+) -> list[tuple[str, int]]:
+    """Cluster paired antibody sequences (heavy + light chain).
+
+    Args:
+        sequence_ids: List of sequence identifiers.
+        heavy_v_genes: List of heavy chain V gene names.
+        heavy_j_genes: List of heavy chain J gene names.
+        heavy_cdr3s: List of heavy chain CDR3/junction amino acid sequences.
+        light_v_genes: List of light chain V gene names.
+        light_j_genes: List of light chain J gene names.
         mutations: List of mutation lists (each as list of encoded mutations).
         params: Clustering parameters (optional).
 

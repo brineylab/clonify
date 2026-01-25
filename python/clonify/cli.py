@@ -22,6 +22,13 @@ def run(
     output_path: Path | None = typer.Option(
         None, "--output", "-o", help="Output file path"
     ),
+    input_format: str | None = typer.Option(
+        None, "--input-format", help="Input file format (csv, tsv, parquet). Auto-detected if not specified."
+    ),
+    output_format: str | None = typer.Option(
+        None, "--output-format", help="Output file format (csv, tsv, parquet). Auto-detected if not specified."
+    ),
+    # Clustering parameters
     distance_cutoff: float = typer.Option(
         0.35, "--cutoff", "-c", help="Distance cutoff for clustering"
     ),
@@ -36,6 +43,13 @@ def run(
         "--partition-level",
         "-p",
         help="Partitioning strategy: v_family, v_gene, or vj_gene",
+    ),
+    # Threading options
+    n_threads: int | None = typer.Option(
+        None,
+        "--threads",
+        "-t",
+        help="Number of threads (default: all cores, use 1 for sequential)",
     ),
     # Paired mode options
     paired: bool = typer.Option(
@@ -63,6 +77,9 @@ def run(
     mutations_key: str | None = typer.Option(
         None, "--mutations-key", help="Column name for mutations"
     ),
+    mutation_delimiter: str = typer.Option(
+        "|", "--mutation-delimiter", help="Delimiter for mutation strings"
+    ),
     # Column keys (paired mode)
     heavy_vgene_key: str | None = typer.Option(
         None, "--heavy-vgene-key", help="Column name for heavy chain V gene (paired mode)"
@@ -82,6 +99,9 @@ def run(
     # Output options
     lineage_column: str = typer.Option(
         "lineage", "--lineage-col", help="Name of output lineage column"
+    ),
+    lineage_size_column: str = typer.Option(
+        "lineage_size", "--lineage-size-col", help="Name of output lineage size column"
     ),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress output"),
 ) -> None:
@@ -103,11 +123,14 @@ def run(
     try:
         assignments, _ = clonify(
             str(input_path),
+            input_format=input_format,
             output_path=str(output_path),
+            output_format=output_format,
             distance_cutoff=distance_cutoff,
             shared_mutation_bonus=shared_mutation_bonus,
             length_penalty_multiplier=length_penalty,
             partition_level=partition_level,
+            n_threads=n_threads,
             paired=paired,
             heavy_suffix=heavy_suffix,
             light_suffix=light_suffix,
@@ -116,12 +139,14 @@ def run(
             jgene_key=jgene_key,
             cdr3_key=cdr3_key,
             mutations_key=mutations_key,
+            mutation_delimiter=mutation_delimiter,
             heavy_vgene_key=heavy_vgene_key,
             heavy_jgene_key=heavy_jgene_key,
             heavy_cdr3_key=heavy_cdr3_key,
             light_vgene_key=light_vgene_key,
             light_jgene_key=light_jgene_key,
             lineage_column=lineage_column,
+            lineage_size_column=lineage_size_column,
             verbose=not quiet,
         )
 

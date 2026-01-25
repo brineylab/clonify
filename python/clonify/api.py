@@ -190,6 +190,8 @@ def clonify(
     heavy_cdr3_key: str | None = None,
     light_vgene_key: str | None = None,
     light_jgene_key: str | None = None,
+    # Threading options
+    n_threads: int | None = None,
     # Other options
     mutation_delimiter: str = "|",
     # Output options
@@ -221,6 +223,11 @@ def clonify(
         "v_gene" (partition by full V gene), or "vj_gene" (partition by V+J
         gene combination, default). Finer partitioning improves performance
         on large datasets.
+    n_threads : int, optional
+        Number of threads for parallel processing. Options:
+        - None (default): Use all available cores
+        - 1: Sequential execution (useful for debugging)
+        - N: Use exactly N threads
     paired : bool
         Enable paired heavy/light chain mode (default: False). When True,
         light chain V/J genes are used in scoring (not partitioning).
@@ -283,6 +290,7 @@ def clonify(
         len_penalty=int(length_penalty_multiplier),
         epsilon=0.001,
         partition_level=partition_level_enum,
+        n_threads=n_threads,
     )
 
     if paired:
@@ -291,21 +299,11 @@ def clonify(
 
         # Find columns
         id_col = _find_column(df, paired_aliases["sequence_id"], id_key)
-        heavy_v_col = _find_column(
-            df, paired_aliases["heavy_v_gene"], heavy_vgene_key
-        )
-        heavy_j_col = _find_column(
-            df, paired_aliases["heavy_j_gene"], heavy_jgene_key
-        )
-        heavy_cdr3_col = _find_column(
-            df, paired_aliases["heavy_cdr3"], heavy_cdr3_key
-        )
-        light_v_col = _find_column(
-            df, paired_aliases["light_v_gene"], light_vgene_key
-        )
-        light_j_col = _find_column(
-            df, paired_aliases["light_j_gene"], light_jgene_key
-        )
+        heavy_v_col = _find_column(df, paired_aliases["heavy_v_gene"], heavy_vgene_key)
+        heavy_j_col = _find_column(df, paired_aliases["heavy_j_gene"], heavy_jgene_key)
+        heavy_cdr3_col = _find_column(df, paired_aliases["heavy_cdr3"], heavy_cdr3_key)
+        light_v_col = _find_column(df, paired_aliases["light_v_gene"], light_vgene_key)
+        light_j_col = _find_column(df, paired_aliases["light_j_gene"], light_jgene_key)
 
         # Mutations column is optional
         try:
@@ -324,9 +322,7 @@ def clonify(
         # Parse mutations
         if mut_col is not None:
             raw_mutations = df[mut_col].to_list()
-            mutations = [
-                parse_mutations(str(m) if m is not None else "") for m in raw_mutations
-            ]
+            mutations = [parse_mutations(str(m) if m is not None else "") for m in raw_mutations]
         else:
             mutations = [[] for _ in sequence_ids]
 
@@ -374,9 +370,7 @@ def clonify(
         # Parse mutations
         if mut_col is not None:
             raw_mutations = df[mut_col].to_list()
-            mutations = [
-                parse_mutations(str(m) if m is not None else "") for m in raw_mutations
-            ]
+            mutations = [parse_mutations(str(m) if m is not None else "") for m in raw_mutations]
         else:
             mutations = [[] for _ in sequence_ids]
 
@@ -400,10 +394,12 @@ def clonify(
     # Add lineage and lineage_size columns to DataFrame
     lineages = [assignments.get(seq_id, "") for seq_id in sequence_ids]
     sizes = [lineage_counts.get(assignments.get(seq_id, ""), 0) for seq_id in sequence_ids]
-    result_df = df.with_columns([
-        pl.Series(name=lineage_column, values=lineages),
-        pl.Series(name=lineage_size_column, values=sizes),
-    ])
+    result_df = df.with_columns(
+        [
+            pl.Series(name=lineage_column, values=lineages),
+            pl.Series(name=lineage_size_column, values=sizes),
+        ]
+    )
 
     if verbose:
         n_clusters = len(set(assignments.values()))
