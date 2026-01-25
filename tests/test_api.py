@@ -194,11 +194,11 @@ class TestClonify:
 
 
 class TestColumnDetection:
-    """Tests for automatic column detection."""
+    """Tests for column handling."""
 
-    def test_detect_standard_columns(self, sample_df):
-        """Test detection of standard column names."""
-        assignments, _ = clonify(sample_df, verbose=False)
+    def test_default_column_names(self, small_df):
+        """Test that default column names work."""
+        assignments, _ = clonify(small_df, verbose=False)
         assert len(assignments) > 0
 
     def test_custom_column_names(self):
@@ -227,7 +227,7 @@ class TestColumnDetection:
         """Test error when required column is missing."""
         df = pl.DataFrame({"sequence_id": ["s1"], "v_gene": ["IGHV3-20"]})
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Column .* not found"):
             clonify(df, verbose=False)
 
 
@@ -463,15 +463,17 @@ class TestPairedSequences:
             }
         )
 
-        # These column names don't match default aliases, so use custom keys
+        # These column names don't match defaults, so use custom keys
         assignments, _ = clonify(
             df,
             paired=True,
+            id_key="sequence_id",
             heavy_vgene_key="v_gene_heavy",
             heavy_jgene_key="j_gene_heavy",
             heavy_cdr3_key="junction_aa_heavy",
             light_vgene_key="v_gene_light",
             light_jgene_key="j_gene_light",
+            light_cdr3_key="junction_aa_light",
             verbose=False,
         )
 

@@ -63,38 +63,41 @@ def run(
     ),
     # Column keys (unpaired mode)
     id_key: str | None = typer.Option(
-        None, "--id-key", help="Column name for sequence IDs"
+        None, "--id-key", help="Column name for sequence IDs (default: 'sequence_id' unpaired, 'name' paired)"
     ),
     vgene_key: str | None = typer.Option(
-        None, "--vgene-key", help="Column name for V gene (unpaired mode)"
+        None, "--vgene-key", help="Column name for V gene (default: 'v_gene')"
     ),
     jgene_key: str | None = typer.Option(
-        None, "--jgene-key", help="Column name for J gene (unpaired mode)"
+        None, "--jgene-key", help="Column name for J gene (default: 'j_gene')"
     ),
     cdr3_key: str | None = typer.Option(
-        None, "--cdr3-key", help="Column name for CDR3/junction (unpaired mode)"
+        None, "--cdr3-key", help="Column name for CDR3/junction (default: 'cdr3')"
     ),
     mutations_key: str | None = typer.Option(
-        None, "--mutations-key", help="Column name for mutations"
+        None, "--mutations-key", help="Column name for mutations (default: 'v_mutations')"
     ),
     mutation_delimiter: str = typer.Option(
         "|", "--mutation-delimiter", help="Delimiter for mutation strings"
     ),
     # Column keys (paired mode)
     heavy_vgene_key: str | None = typer.Option(
-        None, "--heavy-vgene-key", help="Column name for heavy chain V gene (paired mode)"
+        None, "--heavy-vgene-key", help="Column name for heavy chain V gene (default: 'v_gene:0')"
     ),
     heavy_jgene_key: str | None = typer.Option(
-        None, "--heavy-jgene-key", help="Column name for heavy chain J gene (paired mode)"
+        None, "--heavy-jgene-key", help="Column name for heavy chain J gene (default: 'j_gene:0')"
     ),
     heavy_cdr3_key: str | None = typer.Option(
-        None, "--heavy-cdr3-key", help="Column name for heavy chain CDR3 (paired mode)"
+        None, "--heavy-cdr3-key", help="Column name for heavy chain CDR3 (default: 'cdr3:0')"
     ),
     light_vgene_key: str | None = typer.Option(
-        None, "--light-vgene-key", help="Column name for light chain V gene (paired mode)"
+        None, "--light-vgene-key", help="Column name for light chain V gene (default: 'v_gene:1')"
     ),
     light_jgene_key: str | None = typer.Option(
-        None, "--light-jgene-key", help="Column name for light chain J gene (paired mode)"
+        None, "--light-jgene-key", help="Column name for light chain J gene (default: 'j_gene:1')"
+    ),
+    light_cdr3_key: str | None = typer.Option(
+        None, "--light-cdr3-key", help="Column name for light chain CDR3 (default: 'cdr3:1')"
     ),
     # Output options
     lineage_column: str = typer.Option(
@@ -145,6 +148,7 @@ def run(
             heavy_cdr3_key=heavy_cdr3_key,
             light_vgene_key=light_vgene_key,
             light_jgene_key=light_jgene_key,
+            light_cdr3_key=light_cdr3_key,
             lineage_column=lineage_column,
             lineage_size_column=lineage_size_column,
             verbose=not quiet,

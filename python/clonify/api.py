@@ -99,78 +99,21 @@ PARTITION_LEVELS = {
     "vj_gene": PartitionLevel.VjGene,
 }
 
-# Standard column names to search for (unpaired sequences)
-COLUMN_ALIASES = {
-    "sequence_id": ["sequence_id", "seq_id", "id", "name"],
-    "v_gene": ["v_gene", "v_call", "vgene", "v"],
-    "j_gene": ["j_gene", "j_call", "jgene", "j"],
-    "cdr3": ["junction_aa", "cdr3_aa", "cdr3", "junction", "junc_aa"],
-    "mutations": ["v_mutations", "mutations", "muts", "shm"],
-}
+# Default column names
+DEFAULT_ID_COLUMN = "sequence_id"
+DEFAULT_V_GENE_COLUMN = "v_gene"
+DEFAULT_J_GENE_COLUMN = "j_gene"
+DEFAULT_CDR3_COLUMN = "cdr3"
+DEFAULT_MUTATIONS_COLUMN = "v_mutations"
+DEFAULT_PAIRED_ID_COLUMN = "name"
 
 
-def _build_paired_aliases(heavy_suffix: str, light_suffix: str) -> dict[str, list[str]]:
-    """Build column aliases for paired sequence format."""
-    return {
-        "sequence_id": ["sequence_id", "seq_id", "id", "name"],
-        "heavy_v_gene": [
-            f"v_gene{heavy_suffix}",
-            f"v_call{heavy_suffix}",
-            f"vgene{heavy_suffix}",
-            "heavy_v_gene",
-            "heavy_v_call",
-        ],
-        "heavy_j_gene": [
-            f"j_gene{heavy_suffix}",
-            f"j_call{heavy_suffix}",
-            f"jgene{heavy_suffix}",
-            "heavy_j_gene",
-            "heavy_j_call",
-        ],
-        "heavy_cdr3": [
-            f"junction_aa{heavy_suffix}",
-            f"cdr3_aa{heavy_suffix}",
-            f"cdr3{heavy_suffix}",
-            "heavy_junction_aa",
-            "heavy_cdr3",
-        ],
-        "light_v_gene": [
-            f"v_gene{light_suffix}",
-            f"v_call{light_suffix}",
-            f"vgene{light_suffix}",
-            "light_v_gene",
-            "light_v_call",
-        ],
-        "light_j_gene": [
-            f"j_gene{light_suffix}",
-            f"j_call{light_suffix}",
-            f"jgene{light_suffix}",
-            "light_j_gene",
-            "light_j_call",
-        ],
-        "light_cdr3": [
-            f"junction_aa{light_suffix}",
-            f"cdr3_aa{light_suffix}",
-            f"cdr3{light_suffix}",
-            "light_junction_aa",
-            "light_cdr3",
-        ],
-        "mutations": ["v_mutations", "mutations", "muts", "shm"],
-    }
-
-
-def _find_column(df: pl.DataFrame, aliases: list[str], custom: str | None = None) -> str:
-    """Find a column by name or alias."""
-    if custom is not None:
-        if custom in df.columns:
-            return custom
-        raise ValueError(f"Column '{custom}' not found in DataFrame")
-
-    for alias in aliases:
-        if alias in df.columns:
-            return alias
-
-    raise ValueError(f"Could not find column. Tried: {aliases}")
+def _get_column(df: pl.DataFrame, default: str, custom: str | None = None) -> str:
+    """Get a column name, using custom key if provided, otherwise default."""
+    col_name = custom if custom is not None else default
+    if col_name not in df.columns:
+        raise ValueError(f"Column '{col_name}' not found in DataFrame")
+    return col_name
 
 
 def _load_dataframe(
@@ -273,6 +216,7 @@ def clonify(
     heavy_cdr3_key: str | None = None,
     light_vgene_key: str | None = None,
     light_jgene_key: str | None = None,
+    light_cdr3_key: str | None = None,
     # Threading options
     n_threads: int | None = None,
     # Other options
@@ -338,6 +282,8 @@ def clonify(
         Column name for light chain V gene (paired mode).
     light_jgene_key : str, optional
         Column name for light chain J gene (paired mode).
+    light_cdr3_key : str, optional
+        Column name for light chain CDR3 (paired mode).
     mutation_delimiter : str
         Delimiter for mutation strings (default: "|").
     lineage_column : str
@@ -378,26 +324,24 @@ def clonify(
 
     if paired:
         # Paired mode: heavy + light chain
-        paired_aliases = _build_paired_aliases(heavy_suffix, light_suffix)
-
-        # Find columns
-        id_col = _find_column(df, paired_aliases["sequence_id"], id_key)
-        heavy_v_col = _find_column(df, paired_aliases["heavy_v_gene"], heavy_vgene_key)
-        heavy_j_col = _find_column(df, paired_aliases["heavy_j_gene"], heavy_jgene_key)
-        heavy_cdr3_col = _find_column(df, paired_aliases["heavy_cdr3"], heavy_cdr3_key)
-        light_v_col = _find_column(df, paired_aliases["light_v_gene"], light_vgene_key)
-        light_j_col = _find_column(df, paired_aliases["light_j_gene"], light_jgene_key)
+        # Find columns using suffix-based defaults
+        id_col = _get_column(df, DEFAULT_PAIRED_ID_COLUMN, id_key)
+        heavy_v_col = _get_column(df, f"{DEFAULT_V_GENE_COLUMN}{heavy_suffix}", heavy_vgene_key)
+        heavy_j_col = _get_column(df, f"{DEFAULT_J_GENE_COLUMN}{heavy_suffix}", heavy_jgene_key)
+        heavy_cdr3_col = _get_column(df, f"{DEFAULT_CDR3_COLUMN}{heavy_suffix}", heavy_cdr3_key)
+        light_v_col = _get_column(df, f"{DEFAULT_V_GENE_COLUMN}{light_suffix}", light_vgene_key)
+        light_j_col = _get_column(df, f"{DEFAULT_J_GENE_COLUMN}{light_suffix}", light_jgene_key)
 
         # Light CDR3 is optional but used for hash-based lineage naming
-        try:
-            light_cdr3_col = _find_column(df, paired_aliases["light_cdr3"], None)
-        except ValueError:
+        light_cdr3_default = f"{DEFAULT_CDR3_COLUMN}{light_suffix}"
+        if light_cdr3_key is not None or light_cdr3_default in df.columns:
+            light_cdr3_col = _get_column(df, light_cdr3_default, light_cdr3_key)
+        else:
             light_cdr3_col = None
 
         # Mutations column is optional
-        try:
-            mut_col = _find_column(df, paired_aliases["mutations"], mutations_key)
-        except ValueError:
+        mut_col = mutations_key if mutations_key is not None else DEFAULT_MUTATIONS_COLUMN
+        if mut_col not in df.columns:
             mut_col = None
 
         # Extract data
@@ -443,16 +387,15 @@ def clonify(
         )
     else:
         # Unpaired mode: heavy chain only
-        # Find columns
-        id_col = _find_column(df, COLUMN_ALIASES["sequence_id"], id_key)
-        v_col = _find_column(df, COLUMN_ALIASES["v_gene"], vgene_key)
-        j_col = _find_column(df, COLUMN_ALIASES["j_gene"], jgene_key)
-        cdr3_col = _find_column(df, COLUMN_ALIASES["cdr3"], cdr3_key)
+        # Find columns using explicit defaults
+        id_col = _get_column(df, DEFAULT_ID_COLUMN, id_key)
+        v_col = _get_column(df, DEFAULT_V_GENE_COLUMN, vgene_key)
+        j_col = _get_column(df, DEFAULT_J_GENE_COLUMN, jgene_key)
+        cdr3_col = _get_column(df, DEFAULT_CDR3_COLUMN, cdr3_key)
 
         # Mutations column is optional
-        try:
-            mut_col = _find_column(df, COLUMN_ALIASES["mutations"], mutations_key)
-        except ValueError:
+        mut_col = mutations_key if mutations_key is not None else DEFAULT_MUTATIONS_COLUMN
+        if mut_col not in df.columns:
             mut_col = None
 
         # Extract data
