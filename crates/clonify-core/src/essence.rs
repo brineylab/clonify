@@ -1,9 +1,15 @@
 //! Essence and EssenceKey types for grouping identical sequences.
 
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use rustc_hash::FxHashMap;
+
 use crate::config::CANONICAL_SAMPLES;
 use crate::types::{MutBag, MutList, Mutation};
-use rustc_hash::FxHashMap;
-use std::hash::{Hash, Hasher};
+
+/// Sentinel value indicating no cluster assigned.
+const NO_CLUSTER: u32 = u32::MAX;
 
 /// Unique identifier for an antibody sequence type.
 ///
@@ -113,7 +119,7 @@ fn hash_mutations(mutations: &[Mutation]) -> u64 {
 ///
 /// An Essence groups all sequences that share the same EssenceKey,
 /// tracking the different mutation variants observed.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Essence {
     /// Unique identifier for this essence
     pub key: EssenceKey,
@@ -130,8 +136,10 @@ pub struct Essence {
     /// Accumulator for canonical mutation computation
     mutsum: MutBag,
 
-    /// Assigned cluster ID (after clustering)
-    pub cluster_id: Option<u32>,
+    /// Assigned cluster ID (after clustering).
+    /// Uses AtomicU32 for thread-safe interior mutability during parallel clustering.
+    /// Value of u32::MAX (NO_CLUSTER) indicates no cluster assigned.
+    cluster_id: AtomicU32,
 }
 
 impl Essence {
@@ -143,8 +151,23 @@ impl Essence {
             mutlists: FxHashMap::default(),
             weight: 0,
             mutsum: MutBag::new(),
-            cluster_id: None,
+            cluster_id: AtomicU32::new(NO_CLUSTER),
         }
+    }
+
+    /// Get the assigned cluster ID, if any.
+    pub fn cluster_id(&self) -> Option<u32> {
+        let id = self.cluster_id.load(Ordering::Relaxed);
+        if id == NO_CLUSTER {
+            None
+        } else {
+            Some(id)
+        }
+    }
+
+    /// Set the cluster ID.
+    pub fn set_cluster_id(&self, id: u32) {
+        self.cluster_id.store(id, Ordering::Relaxed);
     }
 
     /// Add a sequence with the given mutations.

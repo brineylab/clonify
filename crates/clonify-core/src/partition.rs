@@ -1,5 +1,9 @@
 //! Partitioning and dataset management for clustering.
 
+use std::sync::atomic::AtomicU32;
+
+use rayon::prelude::*;
+
 use crate::config::{
     ClusterParams, PartitionLevel, MAX_AA_LENGTH, MIN_MEGACLUSTER_DISSIMILARITY,
 };
@@ -251,14 +255,25 @@ impl Partition {
     }
 
     /// Perform hierarchical clustering within each megacluster.
-    pub fn cluster(&mut self, params: &ClusterParams, next_cluster: &mut u32) {
-        for mega in &self.megaclusters {
-            mega.cluster(&mut self.essences, params, next_cluster);
+    ///
+    /// Megaclusters are processed in parallel when parallel mode is enabled.
+    /// This is safe because each megacluster operates on disjoint essence indices.
+    pub fn cluster(&self, params: &ClusterParams, next_cluster: &AtomicU32) {
+        if params.is_parallel() && self.megaclusters.len() > 1 {
+            // Process megaclusters in parallel
+            self.megaclusters.par_iter().for_each(|mega| {
+                mega.cluster(&self.essences, params, next_cluster);
+            });
+        } else {
+            // Sequential processing
+            for mega in &self.megaclusters {
+                mega.cluster(&self.essences, params, next_cluster);
+            }
         }
     }
 
     /// Process the partition: finalize, create centers, assign, and cluster.
-    pub fn process(&mut self, params: &ClusterParams, next_cluster: &mut u32) {
+    pub fn process(&mut self, params: &ClusterParams, next_cluster: &AtomicU32) {
         let min_center_size = params.auto_min_center_size(self.essences.len());
         self.finalize_parsing(min_center_size);
         self.create_centers(params);
@@ -448,12 +463,22 @@ impl Dataset {
     }
 
     /// Process all partitions and return (sequence_id, cluster_id) pairs.
+    ///
+    /// When parallel mode is enabled, partitions are processed concurrently.
+    /// This is safe because partitions are completely independent.
     pub fn process(&mut self) -> Vec<(String, u32)> {
-        let mut next_cluster = 1u32;
+        let next_cluster = AtomicU32::new(1);
 
-        // Process each partition
-        for partition in self.partitions.values_mut() {
-            partition.process(&self.params, &mut next_cluster);
+        if self.params.is_parallel() && self.partitions.len() > 1 {
+            // Process partitions in parallel
+            self.partitions.par_iter_mut().for_each(|(_, partition)| {
+                partition.process(&self.params, &next_cluster);
+            });
+        } else {
+            // Sequential processing
+            for partition in self.partitions.values_mut() {
+                partition.process(&self.params, &next_cluster);
+            }
         }
 
         // Collect results
@@ -464,7 +489,7 @@ impl Dataset {
                     .partitions
                     .get(partition_key)
                     .and_then(|p| p.essences.get(*ess_idx))
-                    .and_then(|e| e.cluster_id)
+                    .and_then(|e| e.cluster_id())
                     .unwrap_or(0);
                 (seq_id.clone(), cluster_id)
             })

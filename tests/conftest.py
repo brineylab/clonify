@@ -32,7 +32,7 @@ def small_df():
             "sequence_id": ["seq1", "seq2", "seq3", "seq4"],
             "v_gene": ["IGHV3-20*01", "IGHV3-20*01", "IGHV3-20*01", "IGHV1-2*01"],
             "j_gene": ["IGHJ4*02", "IGHJ4*02", "IGHJ4*02", "IGHJ6*01"],
-            "cdr3": ["CARFDY", "CARFDY", "CARFDYW", "CARDYF"],
+            "junction_aa": ["CARFDY", "CARFDY", "CARFDYW", "CARDYF"],
             "v_mutations": ["10:G>T|20:A>C", "10:G>T|20:A>C", "", ""],
         }
     )
@@ -47,11 +47,11 @@ def paired_df():
             # Heavy chain (suffix :0)
             "v_gene:0": ["IGHV3-20*01", "IGHV3-20*01", "IGHV3-20*01", "IGHV1-2*01"],
             "j_gene:0": ["IGHJ4*02", "IGHJ4*02", "IGHJ4*02", "IGHJ6*01"],
-            "cdr3:0": ["CARFDY", "CARFDY", "CARFDYW", "CARDYF"],
+            "junction_aa:0": ["CARFDY", "CARFDY", "CARFDYW", "CARDYF"],
             # Light chain (suffix :1) - seq3 has different light chain
             "v_gene:1": ["IGKV1-5*01", "IGKV1-5*01", "IGLV2-14*01", "IGKV3-20*01"],
             "j_gene:1": ["IGKJ1*01", "IGKJ1*01", "IGLJ2*01", "IGKJ4*01"],
-            "cdr3:1": ["CQQYNS", "CQQYNS", "CQVWDS", "CQQSYS"],
+            "junction_aa:1": ["CQQYNS", "CQQYNS", "CQVWDS", "CQQSYS"],
             # Mutations
             "v_mutations": ["10:G>T|20:A>C", "10:G>T|20:A>C", "", ""],
         }

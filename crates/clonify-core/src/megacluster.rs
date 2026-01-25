@@ -1,5 +1,7 @@
 //! Megacluster formation and hierarchical clustering within megaclusters.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use rayon::prelude::*;
 
 use crate::config::ClusterParams;
@@ -45,14 +47,19 @@ impl Megacluster {
     /// Perform hierarchical clustering on the essences.
     ///
     /// # Arguments
-    /// * `essences` - The essence pool
+    /// * `essences` - The essence pool (only cluster_id field is mutated)
     /// * `params` - Clustering parameters
-    /// * `next_cluster` - Counter for cluster IDs (mutated)
+    /// * `next_cluster` - Atomic counter for cluster IDs
+    ///
+    /// # Safety
+    /// This method only writes to `cluster_id` fields of essences at indices
+    /// in `self.essence_indices`. When called from parallel code, callers must
+    /// ensure no two megaclusters share essence indices.
     pub fn cluster(
         &self,
-        essences: &mut [Essence],
+        essences: &[Essence],
         params: &ClusterParams,
-        next_cluster: &mut u32,
+        next_cluster: &AtomicU32,
     ) {
         let n = self.essence_indices.len();
         if n == 0 {
@@ -61,8 +68,8 @@ impl Megacluster {
 
         if n == 1 {
             // Single essence: assign its own cluster
-            essences[self.essence_indices[0]].cluster_id = Some(*next_cluster);
-            *next_cluster += 1;
+            let cluster_id = next_cluster.fetch_add(1, Ordering::Relaxed);
+            essences[self.essence_indices[0]].set_cluster_id(cluster_id);
             return;
         }
 
@@ -73,7 +80,8 @@ impl Megacluster {
         let base_matrix = self.build_base_matrix(essences, use_parallel);
 
         // Build full dissimilarity matrix
-        let mut dist_matrix = self.build_dissimilarity_matrix(essences, &base_matrix, params, use_parallel);
+        let mut dist_matrix =
+            self.build_dissimilarity_matrix(essences, &base_matrix, params, use_parallel);
 
         // Build member weights
         let mut members: Vec<i32> = self
@@ -90,12 +98,14 @@ impl Megacluster {
         let flat_clusters = form_flat_clusters_from_dist(&dendrogram, params.cutoff, n);
 
         // Assign cluster IDs
+        // Reserve a block of cluster IDs atomically
         let n_clusters = *flat_clusters.iter().max().unwrap_or(&0);
+        let base_cluster_id = next_cluster.fetch_add(n_clusters, Ordering::Relaxed);
+
         for (i, &cluster_num) in flat_clusters.iter().enumerate() {
-            let cluster_id = *next_cluster + cluster_num - 1;
-            essences[self.essence_indices[i]].cluster_id = Some(cluster_id);
+            let cluster_id = base_cluster_id + cluster_num - 1;
+            essences[self.essence_indices[i]].set_cluster_id(cluster_id);
         }
-        *next_cluster += n_clusters;
     }
 
     /// Build base distance matrix (Hamming/Levenshtein distances).
@@ -227,22 +237,22 @@ mod tests {
 
     #[test]
     fn test_megacluster_single() {
-        let mut essences = vec![make_essence("CARFDY", 1, 2)];
+        let essences = vec![make_essence("CARFDY", 1, 2)];
         let mut mc = Megacluster::new();
         mc.add(0);
 
         let params = ClusterParams::default();
-        let mut next_cluster = 1u32;
+        let next_cluster = AtomicU32::new(1);
 
-        mc.cluster(&mut essences, &params, &mut next_cluster);
+        mc.cluster(&essences, &params, &next_cluster);
 
-        assert_eq!(essences[0].cluster_id, Some(1));
-        assert_eq!(next_cluster, 2);
+        assert_eq!(essences[0].cluster_id(), Some(1));
+        assert_eq!(next_cluster.load(Ordering::Relaxed), 2);
     }
 
     #[test]
     fn test_megacluster_identical() {
-        let mut essences = vec![
+        let essences = vec![
             make_essence("CARFDY", 1, 2),
             make_essence("CARFDY", 1, 2),
         ];
@@ -251,17 +261,17 @@ mod tests {
         mc.add(1);
 
         let params = ClusterParams::default();
-        let mut next_cluster = 1u32;
+        let next_cluster = AtomicU32::new(1);
 
-        mc.cluster(&mut essences, &params, &mut next_cluster);
+        mc.cluster(&essences, &params, &next_cluster);
 
         // Identical essences should be in same cluster
-        assert_eq!(essences[0].cluster_id, essences[1].cluster_id);
+        assert_eq!(essences[0].cluster_id(), essences[1].cluster_id());
     }
 
     #[test]
     fn test_megacluster_different() {
-        let mut essences = vec![
+        let essences = vec![
             make_essence("CARFDY", 1, 2),
             make_essence("XYZABC", 3, 4), // Very different
         ];
@@ -270,11 +280,11 @@ mod tests {
         mc.add(1);
 
         let params = ClusterParams::default();
-        let mut next_cluster = 1u32;
+        let next_cluster = AtomicU32::new(1);
 
-        mc.cluster(&mut essences, &params, &mut next_cluster);
+        mc.cluster(&essences, &params, &next_cluster);
 
         // Very different essences should be in different clusters
-        assert_ne!(essences[0].cluster_id, essences[1].cluster_id);
+        assert_ne!(essences[0].cluster_id(), essences[1].cluster_id());
     }
 }
